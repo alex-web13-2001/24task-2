@@ -41,6 +41,10 @@ import {
   UserPlus,
 } from 'lucide-react';
 import { toast } from 'sonner@2.0.3';
+import { projectId, publicAnonKey } from '../utils/supabase/info';
+import { getAuthToken } from '../utils/supabase/client';
+import { format } from 'date-fns';
+import { ru } from 'date-fns/locale';
 
 type Role = 'owner' | 'collaborator' | 'member' | 'viewer';
 
@@ -99,6 +103,16 @@ const statusColors: Record<Invitation['status'], string> = {
   accepted: 'bg-green-100 text-green-700',
 };
 
+// Helper function to format dates
+const formatDate = (dateString: string): string => {
+  try {
+    const date = new Date(dateString);
+    return format(date, 'dd.MM.yyyy', { locale: ru });
+  } catch {
+    return dateString; // Return original if parsing fails
+  }
+};
+
 // Mock data
 const getMockMembers = (): Member[] => [
   {
@@ -142,7 +156,7 @@ const getMockInvitations = (): Invitation[] => [
     role: 'member',
     status: 'pending',
     sentDate: '28.10.2024',
-    link: 'https://24task.app/invite/abc123',
+    link: 'https://t24.app/invite/abc123',
   },
   {
     id: '2',
@@ -156,22 +170,105 @@ const getMockInvitations = (): Invitation[] => [
 export function ProjectMembersModal({
   open,
   onOpenChange,
-  projectId,
+  projectId: prjId,
   projectName,
   projectColor,
   currentUserRole,
 }: ProjectMembersModalProps) {
-  const [members, setMembers] = React.useState<Member[]>(getMockMembers());
-  const [invitations, setInvitations] = React.useState<Invitation[]>(getMockInvitations());
+  const [members, setMembers] = React.useState<Member[]>([]);
+  const [invitations, setInvitations] = React.useState<Invitation[]>([]);
   const [searchQuery, setSearchQuery] = React.useState('');
   const [inviteEmail, setInviteEmail] = React.useState('');
   const [inviteRole, setInviteRole] = React.useState<Role>('member');
   const [memberToDelete, setMemberToDelete] = React.useState<Member | null>(null);
   const [inviteToRevoke, setInviteToRevoke] = React.useState<Invitation | null>(null);
   const [activeTab, setActiveTab] = React.useState('members');
+  const [isLoading, setIsLoading] = React.useState(false);
 
   const isOwner = currentUserRole === 'owner';
   const canManage = isOwner;
+
+  // Fetch members and invitations
+  React.useEffect(() => {
+    if (open) {
+      fetchMembers();
+      fetchInvitations();
+    }
+  }, [open, prjId]);
+
+  const fetchMembers = async () => {
+    try {
+      setIsLoading(true);
+      const accessToken = await getAuthToken();
+      
+      if (!accessToken) {
+        console.log('No access token available');
+        setMembers([]);
+        return;
+      }
+      
+      const response = await fetch(
+        `https://${projectId}.supabase.co/functions/v1/make-server-d9879966/projects/${prjId}/members`,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+        }
+      );
+
+      if (response.ok) {
+        const data = await response.json();
+        console.log('Fetched members:', data.members);
+        
+        // Transform members to match expected format
+        const transformedMembers = (data.members || []).map((m: any) => ({
+          id: m.id || m.userId,
+          name: m.name || m.email,
+          email: m.email,
+          avatar: m.name ? m.name.split(' ').map((n: string) => n[0]).join('').toUpperCase() : m.email?.[0]?.toUpperCase() || '?',
+          role: m.role,
+          addedDate: m.addedDate ? new Date(m.addedDate).toLocaleDateString('ru-RU') : 'Недавно',
+        }));
+        
+        setMembers(transformedMembers);
+      } else {
+        console.error('Failed to fetch members');
+        setMembers([]);
+      }
+    } catch (error) {
+      console.error('Fetch members error:', error);
+      setMembers([]);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const fetchInvitations = async () => {
+    try {
+      const accessToken = await getAuthToken();
+      
+      if (!accessToken) {
+        console.log('No access token available for fetching invitations');
+        return;
+      }
+      
+      const response = await fetch(
+        `https://${projectId}.supabase.co/functions/v1/make-server-d9879966/projects/${prjId}/invitations`,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+        }
+      );
+
+      if (response.ok) {
+        const data = await response.json();
+        setInvitations(data.invitations || []);
+      }
+    } catch (error) {
+      console.error('Fetch invitations error:', error);
+    }
+  };
 
   const filteredMembers = React.useMemo(() => {
     if (!searchQuery) return members;
@@ -183,9 +280,16 @@ export function ProjectMembersModal({
     );
   }, [members, searchQuery]);
 
-  const handleInvite = () => {
+  const handleInvite = async () => {
     if (!inviteEmail.trim()) {
       toast.error('Введите email');
+      return;
+    }
+
+    // Basic email validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(inviteEmail)) {
+      toast.error('Введите корректный email адрес');
       return;
     }
 
@@ -205,20 +309,57 @@ export function ProjectMembersModal({
       return;
     }
 
-    const newInvitation: Invitation = {
-      id: `inv-${Date.now()}`,
-      email: inviteEmail,
-      role: inviteRole,
-      status: 'pending',
-      sentDate: new Date().toLocaleDateString('ru-RU'),
-      link: `https://24task.app/invite/${Math.random().toString(36).substr(2, 9)}`,
-    };
+    try {
+      setIsLoading(true);
+      const accessToken = await getAuthToken();
+      
+      if (!accessToken) {
+        console.error('No access token found');
+        toast.error('Необходима авторизация. Пожалуйста, войдите в систему заново.');
+        return;
+      }
 
-    setInvitations([newInvitation, ...invitations]);
-    setInviteEmail('');
-    setInviteRole('member');
-    toast.success('Приглашение отправлено');
-    setActiveTab('invitations');
+      console.log('Sending invitation for:', inviteEmail, 'role:', inviteRole);
+      
+      const response = await fetch(
+        `https://${projectId}.supabase.co/functions/v1/make-server-d9879966/projects/${prjId}/invitations`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({ email: inviteEmail, role: inviteRole }),
+        }
+      );
+
+      console.log('Invitation response status:', response.status);
+
+      if (response.ok) {
+        const data = await response.json();
+        console.log('Invitation created:', data);
+        setInvitations([data.invitation, ...invitations]);
+        setInviteEmail('');
+        setInviteRole('member');
+        toast.success('Приглашение отправлено');
+        setActiveTab('invitations');
+      } else {
+        let errorMessage = 'Ошибка отправки приглашения';
+        try {
+          const error = await response.json();
+          console.error('Server error response:', error);
+          errorMessage = error.error || errorMessage;
+        } catch (e) {
+          console.error('Failed to parse error response:', e);
+        }
+        toast.error(errorMessage);
+      }
+    } catch (error) {
+      console.error('Invite error (catch block):', error);
+      toast.error(`Ошибка отправки приглашения: ${error instanceof Error ? error.message : 'Неизвестная ошибка'}`);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleCopyLink = (link?: string) => {
@@ -228,36 +369,79 @@ export function ProjectMembersModal({
     }
   };
 
-  const handleResendInvite = (invitation: Invitation) => {
-    const newLink = `https://24task.app/invite/${Math.random().toString(36).substr(2, 9)}`;
-    setInvitations(
-      invitations.map((inv) =>
-        inv.id === invitation.id
-          ? {
-              ...inv,
-              status: 'pending',
-              sentDate: new Date().toLocaleDateString('ru-RU'),
-              link: newLink,
-            }
-          : inv
-      )
-    );
-    toast.success('Приглашение повторно отправлено');
+  const handleResendInvite = async (invitation: Invitation) => {
+    try {
+      setIsLoading(true);
+      const accessToken = await getAuthToken();
+      
+      if (!accessToken) {
+        toast.error('Необходима авторизация');
+        return;
+      }
+      
+      const response = await fetch(
+        `https://${projectId}.supabase.co/functions/v1/make-server-d9879966/projects/${prjId}/invitations/${invitation.id}/resend`,
+        {
+          method: 'PUT',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+        }
+      );
+
+      if (response.ok) {
+        await fetchInvitations();
+        toast.success('Приглашение повторно отправлено');
+      } else {
+        toast.error('Ошибка повторной отправки');
+      }
+    } catch (error) {
+      console.error('Resend invite error:', error);
+      toast.error('Ошибка повторной отправки');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const handleRevokeInvite = () => {
+  const handleRevokeInvite = async () => {
     if (!inviteToRevoke) return;
 
-    setInvitations(
-      invitations.map((inv) =>
-        inv.id === inviteToRevoke.id ? { ...inv, status: 'revoked' } : inv
-      )
-    );
-    toast.success('Приглашение отозвано');
-    setInviteToRevoke(null);
+    try {
+      setIsLoading(true);
+      const accessToken = await getAuthToken();
+      
+      if (!accessToken) {
+        toast.error('Необходима авторизация');
+        setInviteToRevoke(null);
+        return;
+      }
+      
+      const response = await fetch(
+        `https://${projectId}.supabase.co/functions/v1/make-server-d9879966/projects/${prjId}/invitations/${inviteToRevoke.id}/revoke`,
+        {
+          method: 'PUT',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+        }
+      );
+
+      if (response.ok) {
+        await fetchInvitations();
+        toast.success('Приглашение отозвано');
+      } else {
+        toast.error('Ошибка отзыва приглашения');
+      }
+    } catch (error) {
+      console.error('Revoke invite error:', error);
+      toast.error('Ошибка отзыва приглашения');
+    } finally {
+      setIsLoading(false);
+      setInviteToRevoke(null);
+    }
   };
 
-  const handleChangeRole = (memberId: string, newRole: Role) => {
+  const handleChangeRole = async (memberId: string, newRole: Role) => {
     const member = members.find((m) => m.id === memberId);
     if (!member) return;
 
@@ -270,13 +454,44 @@ export function ProjectMembersModal({
       }
     }
 
-    setMembers(
-      members.map((m) => (m.id === memberId ? { ...m, role: newRole } : m))
-    );
-    toast.success('Роль обновлена');
+    try {
+      setIsLoading(true);
+      const accessToken = await getAuthToken();
+      
+      if (!accessToken) {
+        toast.error('Необходима авторизация');
+        return;
+      }
+      
+      const response = await fetch(
+        `https://${projectId}.supabase.co/functions/v1/make-server-d9879966/projects/${prjId}/members/${memberId}`,
+        {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({ role: newRole }),
+        }
+      );
+
+      if (response.ok) {
+        setMembers(
+          members.map((m) => (m.id === memberId ? { ...m, role: newRole } : m))
+        );
+        toast.success('Роль обновлена');
+      } else {
+        toast.error('Ошибка обновления роли');
+      }
+    } catch (error) {
+      console.error('Change role error:', error);
+      toast.error('Ошибка обновления роли');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const handleDeleteMember = () => {
+  const handleDeleteMember = async () => {
     if (!memberToDelete) return;
 
     // Проверка: нельзя удалить последнего владельца
@@ -289,9 +504,39 @@ export function ProjectMembersModal({
       }
     }
 
-    setMembers(members.filter((m) => m.id !== memberToDelete.id));
-    toast.success('Участник удалён из проекта');
-    setMemberToDelete(null);
+    try {
+      setIsLoading(true);
+      const accessToken = await getAuthToken();
+      
+      if (!accessToken) {
+        toast.error('Необходима авторизация');
+        setMemberToDelete(null);
+        return;
+      }
+      
+      const response = await fetch(
+        `https://${projectId}.supabase.co/functions/v1/make-server-d9879966/projects/${prjId}/members/${memberToDelete.id}`,
+        {
+          method: 'DELETE',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+        }
+      );
+
+      if (response.ok) {
+        setMembers(members.filter((m) => m.id !== memberToDelete.id));
+        toast.success('Участник удалён из проекта');
+      } else {
+        toast.error('Ошибка удаления участника');
+      }
+    } catch (error) {
+      console.error('Delete member error:', error);
+      toast.error('Ошибка удаления участника');
+    } finally {
+      setIsLoading(false);
+      setMemberToDelete(null);
+    }
   };
 
   return (

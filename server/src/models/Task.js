@@ -1,88 +1,81 @@
-import mongoose from 'mongoose';
+const { DataTypes } = require('sequelize');
+const { sequelize } = require('../config/database');
 
-const taskSchema = new mongoose.Schema({
+const Task = sequelize.define('Task', {
+  id: {
+    type: DataTypes.UUID,
+    defaultValue: DataTypes.UUIDV4,
+    primaryKey: true
+  },
   title: {
-    type: String,
-    required: [true, 'Название задачи обязательно'],
-    trim: true,
-    minlength: [2, 'Название должно содержать минимум 2 символа'],
-    maxlength: [200, 'Название не должно превышать 200 символов']
+    type: DataTypes.STRING(255),
+    allowNull: false
   },
   description: {
-    type: String,
-    trim: true,
-    maxlength: [2000, 'Описание не должно превышать 2000 символов']
-  },
-  projectId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Project',
-    default: null // null для личных задач
-  },
-  categoryId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Category',
-    default: null
-  },
-  tags: [{
-    type: String,
-    trim: true
-  }],
-  priority: {
-    type: String,
-    enum: ['Low', 'Medium', 'High', 'Urgent'],
-    default: 'Medium'
+    type: DataTypes.TEXT,
+    allowNull: true
   },
   status: {
-    type: String,
-    default: 'Assigned'
+    type: DataTypes.STRING(50),
+    defaultValue: 'к выполнению',
+    validate: {
+      isIn: [['к выполнению', 'в работе', 'выполнено', 'отменено']]
+    }
   },
-  assignee: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    default: null
+  priority: {
+    type: DataTypes.STRING(50),
+    defaultValue: 'средний',
+    validate: {
+      isIn: [['низкий', 'средний', 'высокий', 'критический']]
+    }
   },
-  deadline: {
-    type: Date,
-    default: null
+  project_id: {
+    type: DataTypes.UUID,
+    allowNull: true,
+    references: {
+      model: 'projects',
+      key: 'id'
+    },
+    onDelete: 'CASCADE'
   },
-  files: [{
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'File'
-  }],
+  assignee_id: {
+    type: DataTypes.UUID,
+    allowNull: true,
+    references: {
+      model: 'users',
+      key: 'id'
+    },
+    onDelete: 'SET NULL'
+  },
+  created_by: {
+    type: DataTypes.UUID,
+    allowNull: false,
+    references: {
+      model: 'users',
+      key: 'id'
+    },
+    onDelete: 'CASCADE'
+  },
+  category_id: {
+    type: DataTypes.UUID,
+    allowNull: true,
+    references: {
+      model: 'categories',
+      key: 'id'
+    },
+    onDelete: 'SET NULL'
+  },
+  due_date: {
+    type: DataTypes.DATEONLY,
+    allowNull: true
+  },
   archived: {
-    type: Boolean,
-    default: false
-  },
-  authorId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
-    required: true
+    type: DataTypes.BOOLEAN,
+    defaultValue: false
   }
 }, {
+  tableName: 'tasks',
   timestamps: true
 });
 
-// Индексы
-taskSchema.index({ projectId: 1, status: 1 });
-taskSchema.index({ authorId: 1 });
-taskSchema.index({ assignee: 1 });
-taskSchema.index({ archived: 1 });
-taskSchema.index({ deadline: 1 });
-taskSchema.index({ title: 'text', description: 'text' });
-
-// Виртуальное поле для истории
-taskSchema.virtual('history', {
-  ref: 'TaskHistory',
-  localField: '_id',
-  foreignField: 'taskId'
-});
-
-// Метод для проверки просроченности
-taskSchema.methods.isOverdue = function() {
-  if (!this.deadline) return false;
-  return new Date() > this.deadline && this.status !== 'Done';
-};
-
-const Task = mongoose.model('Task', taskSchema);
-
-export default Task;
+module.exports = Task;

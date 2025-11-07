@@ -2,18 +2,20 @@ FROM node:22-alpine
 
 WORKDIR /app
 
-# Копирование package.json и установка зависимостей
+# Copy package files
 COPY package*.json ./
-RUN npm install --production
 
-# Копирование исходного кода
+# Install dependencies
+RUN npm ci --only=production
+
+# Copy source code
 COPY . .
 
-# Создание директории для загрузок
-RUN mkdir -p uploads
+# Create uploads directory
+RUN mkdir -p uploads/avatars
 
-# Открытие порта
-EXPOSE 5000
+# Expose port
+EXPOSE 3000
 
-# Запуск приложения
+# Start server
 CMD ["npm", "start"]

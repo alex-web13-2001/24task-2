@@ -1,64 +1,73 @@
-/**
- * Middleware для обработки ошибок
- */
-export const errorHandler = (err, req, res, next) => {
+const errorHandler = (err, req, res, next) => {
   console.error('Error:', err);
 
-  // Ошибки валидации Mongoose
-  if (err.name === 'ValidationError') {
-    const errors = Object.values(err.errors).map(e => e.message);
+  // Sequelize validation error
+  if (err.name === 'SequelizeValidationError') {
     return res.status(400).json({
       success: false,
-      message: 'Ошибка валидации',
-      errors
+      error: 'Validation error',
+      details: err.errors.map(e => ({
+        field: e.path,
+        message: e.message
+      }))
     });
   }
 
-  // Ошибка дублирования (уникальный индекс)
-  if (err.code === 11000) {
-    const field = Object.keys(err.keyPattern)[0];
+  // Sequelize unique constraint error
+  if (err.name === 'SequelizeUniqueConstraintError') {
     return res.status(400).json({
       success: false,
-      message: `${field} уже существует`
+      error: 'Resource already exists',
+      details: err.errors.map(e => ({
+        field: e.path,
+        message: e.message
+      }))
     });
   }
 
-  // Ошибка CastError (неверный ObjectId)
-  if (err.name === 'CastError') {
+  // Sequelize foreign key constraint error
+  if (err.name === 'SequelizeForeignKeyConstraintError') {
     return res.status(400).json({
       success: false,
-      message: 'Неверный формат ID'
+      error: 'Invalid reference to related resource'
     });
   }
 
-  // JWT ошибки
-  if (err.name === 'JsonWebTokenError') {
-    return res.status(401).json({
+  // Joi validation error
+  if (err.isJoi) {
+    return res.status(400).json({
       success: false,
-      message: 'Недействительный токен'
+      error: 'Validation error',
+      details: err.details.map(d => ({
+        field: d.path.join('.'),
+        message: d.message
+      }))
     });
   }
 
-  if (err.name === 'TokenExpiredError') {
-    return res.status(401).json({
+  // Multer file upload error
+  if (err.name === 'MulterError') {
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(400).json({
+        success: false,
+        error: 'File too large'
+      });
+    }
+    return res.status(400).json({
       success: false,
-      message: 'Токен истек'
+      error: 'File upload error',
+      message: err.message
     });
   }
 
-  // Общая ошибка сервера
-  res.status(err.statusCode || 500).json({
+  // Default error
+  const statusCode = err.statusCode || 500;
+  const message = err.message || 'Internal server error';
+
+  res.status(statusCode).json({
     success: false,
-    message: err.message || 'Внутренняя ошибка сервера'
+    error: message
   });
 };
 
-/**
- * Middleware для обработки несуществующих маршрутов
- */
-export const notFound = (req, res) => {
-  res.status(404).json({
-    success: false,
-    message: 'Маршрут не найден'
-  });
-};
+module.exports = errorHandler;

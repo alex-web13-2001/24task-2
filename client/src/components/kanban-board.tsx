@@ -1,195 +1,405 @@
 import React from 'react';
 import { Card, CardContent, CardHeader } from './ui/card';
 import { Badge } from './ui/badge';
-import { Avatar, AvatarFallback } from './ui/avatar';
-import { MoreHorizontal, Calendar, Flame, Tag } from 'lucide-react';
+import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
+import { MoreHorizontal, Calendar, Flame, Tag, User, AlertCircle, Info } from 'lucide-react';
 import { Button } from './ui/button';
 import { Label } from './ui/label';
 import { Switch } from './ui/switch';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip';
+import { useDrag, useDrop } from 'react-dnd';
+import { useApp } from '../contexts/app-context';
+import { format } from 'date-fns';
+import { ru } from 'date-fns/locale';
+import { motion, AnimatePresence } from 'motion/react';
 import type { Filters } from './filters-panel';
+import type { Task as TaskType } from '../contexts/app-context';
 
-type Task = {
-  id: string;
-  title: string;
-  description: string;
-  priority: 'low' | 'medium' | 'high';
-  project: string;
-  projectId: string;
-  projectColor: string;
-  category: string;
-  categoryId: string;
-  categoryColor: string;
-  assignee: string;
-  assigneeId: string;
-  dueDate: string;
-  dueDateRaw: Date;
-  tags: string[];
-  status: string;
-};
+const ITEM_TYPE = 'TASK_CARD';
 
-type Column = {
-  id: string;
+// Статусы доступные для личных задач (задачи без проекта)
+const PERSONAL_TASK_ALLOWED_STATUSES = ['todo', 'in_progress', 'done'];
+
+// Mock categories for tasks
+const mockCategories = [
+  { id: 'none', name: 'Нет', color: 'bg-gray-400' },
+  { id: 'development', name: 'Разработка', color: 'bg-purple-500' },
+  { id: 'design', name: 'Дизайн', color: 'bg-pink-500' },
+  { id: 'testing', name: 'Тестирование', color: 'bg-green-500' },
+  { id: 'documentation', name: 'Документация', color: 'bg-blue-500' },
+  { id: 'bugs', name: 'Баги', color: 'bg-red-500' },
+  { id: 'features', name: 'Новые функции', color: 'bg-orange-500' },
+];
+
+// Draggable Task Card Component
+const DraggableTaskCard = React.forwardRef<HTMLDivElement, {
+  task: TaskType;
+  onClick: () => void;
+  isOverdue: boolean;
+  index: number;
+  moveCard: (draggedId: string, targetId: string, position: 'before' | 'after') => void;
+  allTasks: TaskType[];
+  baseColumnDefinitions: { id: string; title: string; color: string }[];
+}>(({
+  task,
+  onClick,
+  isOverdue,
+  index,
+  moveCard,
+  allTasks,
+  baseColumnDefinitions,
+}, forwardedRef) => {
+  const { projects, teamMembers } = useApp();
+  const [dropPosition, setDropPosition] = React.useState<'before' | 'after' | null>(null);
+  const [canDropHere, setCanDropHere] = React.useState(true);
+  
+  const [{ isDragging }, drag] = useDrag(() => ({
+    type: ITEM_TYPE,
+    item: { taskId: task.id, currentStatus: task.status, index, hasProjectId: !!task.projectId },
+    collect: (monitor) => ({
+      isDragging: monitor.isDragging(),
+    }),
+  }));
+
+  const [{ isOver }, drop] = useDrop(() => ({
+    accept: ITEM_TYPE,
+    hover: (item: { taskId: string; currentStatus: string; index: number; hasProjectId?: boolean }, monitor) => {
+      if (item.taskId === task.id) return;
+      
+      // Проверяем, можно ли перетащить задачу на эту позицию
+      const draggedTask = allTasks.find(t => t.id === item.taskId);
+      const isTargetCustom = !baseColumnDefinitions.find(base => base.id === task.status);
+      
+      // Проверка 1: Задачи из проектов не могут быть в кастомных столбцах
+      let allowed = !(isTargetCustom && draggedTask?.projectId);
+      
+      // Проверка 2: Личные задачи (без projectId) не могут быть в недоступных базовых статусах
+      if (allowed && draggedTask && !draggedTask.projectId && !isTargetCustom) {
+        // Это базовый столбец, проверяем доступность для личных задач
+        if (!PERSONAL_TASK_ALLOWED_STATUSES.includes(task.status)) {
+          allowed = false;
+        }
+      }
+      
+      setCanDropHere(allowed);
+      
+      const hoverBoundingRect = (monitor.getClientOffset());
+      const hoverMiddleY = hoverBoundingRect ? hoverBoundingRect.y : 0;
+      
+      // Determine position based on hover location
+      const cardElement = document.getElementById(`task-card-${task.id}`);
+      if (cardElement) {
+        const cardRect = cardElement.getBoundingClientRect();
+        const cardMiddleY = (cardRect.top + cardRect.bottom) / 2;
+        setDropPosition(hoverMiddleY < cardMiddleY ? 'before' : 'after');
+      }
+    },
+    drop: (item: { taskId: string; currentStatus: string; hasProjectId?: boolean }) => {
+      if (item.taskId !== task.id && dropPosition && canDropHere) {
+        moveCard(item.taskId, task.id, dropPosition);
+      }
+      setDropPosition(null);
+      setCanDropHere(true);
+    },
+    collect: (monitor) => ({
+      isOver: monitor.isOver(),
+    }),
+  }), [dropPosition, allTasks, baseColumnDefinitions, canDropHere]);
+
+  const combinedRef = (node: HTMLDivElement | null) => {
+    drag(node);
+    drop(node);
+  };
+
+  const category = mockCategories.find((c) => c.id === task.categoryId);
+  const project = projects?.find((p) => p.id === task.projectId);
+  const assignee = teamMembers?.find((m) => m.id === task.assigneeId);
+  
+  const getInitials = (name?: string) => {
+    if (!name) return '?';
+    return name
+      .split(' ')
+      .map(part => part[0])
+      .join('')
+      .toUpperCase()
+      .slice(0, 2);
+  };
+
+  const priorityColors = {
+    low: 'bg-gray-100 text-gray-700 border-gray-300',
+    medium: 'bg-yellow-100 text-yellow-700 border-yellow-300',
+    high: 'bg-red-100 text-red-700 border-red-300',
+    urgent: 'bg-orange-100 text-orange-700 border-orange-300',
+  };
+
+  const priorityLabels = {
+    low: 'Низкий',
+    medium: 'Средний',
+    high: 'Высокий',
+    urgent: 'Срочный',
+  };
+
+  const getColorClass = (color?: string) => {
+    const colorMap: Record<string, string> = {
+      purple: 'bg-purple-500',
+      green: 'bg-green-500',
+      pink: 'bg-pink-500',
+      orange: 'bg-orange-500',
+      blue: 'bg-blue-500',
+      red: 'bg-red-500',
+      yellow: 'bg-yellow-500',
+      indigo: 'bg-indigo-500',
+    };
+    return colorMap[color || ''] || 'bg-gray-500';
+  };
+
+  return (
+    <div className="relative">
+      {isOver && dropPosition === 'before' && (
+        <div className={`absolute -top-1 left-0 right-0 h-0.5 ${canDropHere ? 'bg-purple-500' : 'bg-red-500'} rounded-full z-10`}>
+          <div className={`absolute -left-1 -top-1 w-2 h-2 ${canDropHere ? 'bg-purple-500' : 'bg-red-500'} rounded-full`} />
+          <div className={`absolute -right-1 -top-1 w-2 h-2 ${canDropHere ? 'bg-purple-500' : 'bg-red-500'} rounded-full`} />
+        </div>
+      )}
+      
+      <motion.div
+        id={`task-card-${task.id}`}
+        ref={combinedRef}
+        initial={{ opacity: 0 }}
+        animate={{ 
+          opacity: isDragging ? 0.4 : 1,
+        }}
+        exit={{ opacity: 0 }}
+        transition={{ 
+          duration: 0.1,
+          ease: 'linear'
+        }}
+        className="cursor-move"
+      >
+      <Card
+        className={`cursor-pointer hover:shadow-lg transition-shadow duration-150 ${
+          task.status === 'done' ? 'opacity-60' : ''
+        } ${isDragging ? 'shadow-2xl ring-2 ring-purple-400' : ''}`}
+        onClick={onClick}
+      >
+        <CardContent className="pt-4 pb-3 space-y-3">
+          {/* Проект сверху */}
+          <div className="flex items-center gap-2">
+            {project ? (
+              <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">
+                <div className={`w-2 h-2 rounded-full ${getColorClass(project.color)} mr-1`} />
+                {project.name}
+              </Badge>
+            ) : (
+              <Badge variant="outline" className="bg-gray-50 text-gray-700 border-gray-200">
+                <User className="w-3 h-3 mr-1" />
+                Личные задачи
+              </Badge>
+            )}
+          </div>
+
+          {/* Заголовок */}
+          <h4 className={task.status === 'done' ? 'line-through text-gray-500' : ''}>
+            {task.title}
+          </h4>
+
+          {/* Категория и приоритет */}
+          <div className="flex items-center gap-2 flex-wrap">
+            {category && (
+              <Badge variant="outline" className="bg-purple-100 text-purple-700 border-purple-300">
+                <Tag className="w-3 h-3 mr-1" />
+                {category.name}
+              </Badge>
+            )}
+            <Badge variant="outline" className={priorityColors[task.priority]}>
+              {task.priority === 'urgent' && (
+                <Flame className="w-3 h-3 mr-1 fill-current" />
+              )}
+              {priorityLabels[task.priority]}
+            </Badge>
+          </div>
+
+          {/* Дедлайн и Исполнитель */}
+          <div className="flex items-center justify-between gap-2">
+            {task.deadline && (
+              <div
+                className={`flex items-center gap-1 text-sm ${
+                  isOverdue ? 'text-red-600' : 'text-gray-500'
+                }`}
+              >
+                <Calendar className="w-4 h-4" />
+                <span className={isOverdue ? 'font-medium' : ''}>
+                  {format(new Date(task.deadline), 'dd MMM', { locale: ru })}
+                </span>
+                {isOverdue && (
+                  <AlertCircle className="w-4 h-4 text-red-600 fill-red-100" />
+                )}
+              </div>
+            )}
+            
+            {assignee && (
+              <div className="flex items-center gap-1.5">
+                <Avatar className="w-6 h-6">
+                  {assignee.avatarUrl && (
+                    <AvatarImage src={assignee.avatarUrl} alt={assignee.name} />
+                  )}
+                  <AvatarFallback className="text-xs bg-purple-100 text-purple-700">
+                    {getInitials(assignee.name)}
+                  </AvatarFallback>
+                </Avatar>
+                <span className="text-xs text-gray-500 truncate max-w-[80px]" title={assignee.name}>
+                  {assignee.name}
+                </span>
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+    </motion.div>
+    
+    {isOver && dropPosition === 'after' && (
+      <div className={`absolute -bottom-1 left-0 right-0 h-0.5 ${canDropHere ? 'bg-purple-500' : 'bg-red-500'} rounded-full z-10`}>
+        <div className={`absolute -left-1 -top-1 w-2 h-2 ${canDropHere ? 'bg-purple-500' : 'bg-red-500'} rounded-full`} />
+        <div className={`absolute -right-1 -top-1 w-2 h-2 ${canDropHere ? 'bg-purple-500' : 'bg-red-500'} rounded-full`} />
+      </div>
+    )}
+  </div>
+  );
+});
+
+DraggableTaskCard.displayName = 'DraggableTaskCard';
+
+// Droppable Column Component
+const DroppableColumn = ({
+  columnId,
+  title,
+  color,
+  tasks,
+  onDrop,
+  onTaskClick,
+  isOverdue,
+  moveCardWithinColumn,
+  isCustom = false,
+  allTasks,
+  baseColumnDefinitions,
+}: {
+  columnId: string;
   title: string;
   color: string;
-  tasks: Task[];
-};
+  tasks: TaskType[];
+  onDrop: (taskId: string, newStatus: string) => void;
+  onTaskClick: (taskId: string) => void;
+  isOverdue: (deadline?: string) => boolean;
+  moveCardWithinColumn: (draggedId: string, targetId: string, position: 'before' | 'after') => void;
+  isCustom?: boolean;
+  allTasks: TaskType[];
+  baseColumnDefinitions: { id: string; title: string; color: string }[];
+}) => {
+  const [{ isOver, canDrop }, drop] = useDrop(() => ({
+    accept: ITEM_TYPE,
+    canDrop: (item: { taskId: string; currentStatus: string; hasProjectId?: boolean }) => {
+      const task = allTasks.find(t => t.id === item.taskId);
+      if (!task) return false;
+      
+      // Проверка 1: Если это кастомный столбец, проверяем, что задача личная (без projectId)
+      if (isCustom) {
+        // Запрещаем перетаскивание задач с projectId в кастомные столбцы
+        if (task.projectId) {
+          return false;
+        }
+      }
+      
+      // Проверка 2: Если это базовый столбец и задача личная (без projectId)
+      if (!isCustom && !task.projectId) {
+        // Проверяем, доступен ли этот статус для личных задач
+        if (!PERSONAL_TASK_ALLOWED_STATUSES.includes(columnId)) {
+          return false;
+        }
+      }
+      
+      return true;
+    },
+    drop: (item: { taskId: string; currentStatus: string; hasProjectId?: boolean }, monitor) => {
+      // Only trigger if dropped on empty space (not on a card)
+      const didDrop = monitor.didDrop();
+      if (!didDrop && item.currentStatus !== columnId) {
+        onDrop(item.taskId, columnId);
+      }
+    },
+    collect: (monitor) => ({
+      isOver: monitor.isOver({ shallow: true }),
+      canDrop: monitor.canDrop(),
+    }),
+  }), [isCustom, allTasks]);
 
-const mockColumns: Column[] = [
-  {
-    id: 'assigned',
-    title: 'Назначено',
-    color: 'bg-gray-500',
-    tasks: [
-      {
-        id: '1',
-        title: 'Разработать дизайн главной страницы',
-        description: 'Создать макеты в Figma',
-        priority: 'high',
-        project: 'Веб-сайт',
-        projectId: 'website',
-        projectColor: 'bg-purple-500',
-        category: 'Дизайн',
-        categoryId: 'design',
-        categoryColor: 'bg-pink-500',
-        assignee: 'АП',
-        assigneeId: 'ap',
-        dueDate: '15 ноя',
-        dueDateRaw: new Date('2024-11-15'),
-        tags: ['UI/UX', 'срочно'],
-        status: 'assigned',
-      },
-      {
-        id: '2',
-        title: 'Написать документацию API',
-        description: 'Описать все эндпоинты',
-        priority: 'medium',
-        project: 'Backend',
-        projectId: 'backend',
-        projectColor: 'bg-green-500',
-        category: 'Документация',
-        categoryId: 'documentation',
-        categoryColor: 'bg-blue-500',
-        assignee: 'МИ',
-        assigneeId: 'mi',
-        dueDate: '18 ноя',
-        dueDateRaw: new Date('2024-11-18'),
-        tags: ['API', 'backend'],
-        status: 'assigned',
-      },
-    ],
-  },
-  {
-    id: 'in-progress',
-    title: 'В работе',
-    color: 'bg-blue-500',
-    tasks: [
-      {
-        id: '3',
-        title: 'Интеграция платежной системы',
-        description: 'Подключить Stripe',
-        priority: 'high',
-        project: 'Веб-сайт',
-        projectId: 'website',
-        projectColor: 'bg-purple-500',
-        category: 'Разработка',
-        categoryId: 'development',
-        categoryColor: 'bg-purple-500',
-        assignee: 'ЕС',
-        assigneeId: 'es',
-        dueDate: '12 ноя',
-        dueDateRaw: new Date('2024-11-12'),
-        tags: ['payments', 'integration'],
-        status: 'in-progress',
-      },
-      {
-        id: '7',
-        title: 'Оптимизация базы данных',
-        description: 'Улучшить производительность запросов',
-        priority: 'medium',
-        project: 'Backend',
-        projectId: 'backend',
-        projectColor: 'bg-green-500',
-        category: 'Разработка',
-        categoryId: 'development',
-        categoryColor: 'bg-purple-500',
-        assignee: 'АП',
-        assigneeId: 'ap',
-        dueDate: '20 ноя',
-        dueDateRaw: new Date('2024-11-20'),
-        tags: ['database', 'optimization'],
-        status: 'in-progress',
-      },
-    ],
-  },
-  {
-    id: 'review',
-    title: 'На проверке',
-    color: 'bg-orange-500',
-    tasks: [
-      {
-        id: '4',
-        title: 'Код-ревью функции авторизации',
-        description: 'Проверить безопасность',
-        priority: 'high',
-        project: 'Backend',
-        projectId: 'backend',
-        projectColor: 'bg-green-500',
-        category: 'Тестирование',
-        categoryId: 'testing',
-        categoryColor: 'bg-green-500',
-        assignee: 'АП',
-        assigneeId: 'ap',
-        dueDate: '10 ноя',
-        dueDateRaw: new Date('2024-11-10'),
-        tags: ['security', 'code-review'],
-        status: 'review',
-      },
-      {
-        id: '5',
-        title: 'Тестирование мобильной версии',
-        description: 'Проверить на разных устройствах',
-        priority: 'medium',
-        project: 'Мобильное приложение',
-        projectId: 'mobile',
-        projectColor: 'bg-pink-500',
-        category: 'Тестирование',
-        categoryId: 'testing',
-        categoryColor: 'bg-green-500',
-        assignee: 'МИ',
-        assigneeId: 'mi',
-        dueDate: '13 ноя',
-        dueDateRaw: new Date('2024-11-13'),
-        tags: ['mobile', 'testing'],
-        status: 'review',
-      },
-    ],
-  },
-  {
-    id: 'done',
-    title: 'Готово',
-    color: 'bg-green-500',
-    tasks: [
-      {
-        id: '6',
-        title: 'Настройка CI/CD pipeline',
-        description: 'GitHub Actions',
-        priority: 'low',
-        project: 'DevOps',
-        projectId: 'devops',
-        projectColor: 'bg-orange-500',
-        category: 'Разработка',
-        categoryId: 'development',
-        categoryColor: 'bg-purple-500',
-        assignee: 'ЕС',
-        assigneeId: 'es',
-        dueDate: '8 ноя',
-        dueDateRaw: new Date('2024-11-08'),
-        tags: ['devops', 'automation'],
-        status: 'done',
-      },
-    ],
-  },
-];
+  // Проверяем, является ли этот столбец недоступным для личных задач
+  const isProjectOnlyColumn = !isCustom && !PERSONAL_TASK_ALLOWED_STATUSES.includes(columnId);
+
+  return (
+    <div ref={drop} className="flex flex-col w-80 flex-shrink-0">
+      <div className="flex items-center gap-2 mb-4">
+        <div className={`w-3 h-3 rounded-full ${color}`} />
+        <h3 className="text-gray-900">{title}</h3>
+        {isCustom && (
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Badge variant="outline" className="text-xs px-1.5 py-0 bg-purple-50 text-purple-700 border-purple-300 cursor-help">
+                  <Info className="w-3 h-3 mr-0.5" />
+                  личный
+                </Badge>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="max-w-xs">
+                <p className="text-sm">Только личные задачи (без проекта) могут быть перемещены в этот столбец</p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        )}
+        {isProjectOnlyColumn && (
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Badge variant="outline" className="text-xs px-1.5 py-0 bg-blue-50 text-blue-700 border-blue-300 cursor-help">
+                  <Info className="w-3 h-3 mr-0.5" />
+                  проект
+                </Badge>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="max-w-xs">
+                <p className="text-sm">Только задачи из проектов могут использовать этот статус</p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        )}
+        <Badge variant="secondary" className="ml-auto">
+          {tasks.length}
+        </Badge>
+      </div>
+
+      <div
+        className={`flex-1 space-y-3 overflow-y-auto p-3 rounded-lg transition-colors duration-150 ${
+          isOver && canDrop ? 'bg-purple-50 ring-2 ring-purple-300' : 
+          isOver && !canDrop ? 'bg-red-50 ring-2 ring-red-300' : 
+          'bg-transparent'
+        }`}
+      >
+        <AnimatePresence mode="sync">
+          {tasks.map((task, index) => (
+            <DraggableTaskCard
+              key={task.id}
+              task={task}
+              index={index}
+              onClick={() => onTaskClick(task.id)}
+              isOverdue={isOverdue(task.deadline)}
+              moveCard={moveCardWithinColumn}
+              allTasks={allTasks}
+              baseColumnDefinitions={baseColumnDefinitions}
+            />
+          ))}
+        </AnimatePresence>
+      </div>
+    </div>
+  );
+};
 
 type GroupBy = 'none' | 'project' | 'priority';
 
@@ -197,36 +407,64 @@ export function KanbanBoard({
   searchQuery,
   filters,
   onTaskClick,
+  showCustomColumns = false,
 }: {
   searchQuery: string;
   filters: Filters;
   onTaskClick: (taskId: string) => void;
+  showCustomColumns?: boolean;
 }) {
+  const { tasks, updateTask, customColumns } = useApp();
   const [groupBy, setGroupBy] = React.useState<GroupBy>('none');
+  const [taskOrder, setTaskOrder] = React.useState<Record<string, string[]>>({});
 
-  const isOverdue = (dueDate: Date) => {
-    return dueDate < new Date() && dueDate.toDateString() !== new Date().toDateString();
+  // Define base kanban columns
+  const baseColumnDefinitions = React.useMemo(() => [
+    { id: 'todo', title: 'К выполнению', color: 'bg-gray-500' },
+    { id: 'in_progress', title: 'В работе', color: 'bg-blue-500' },
+    { id: 'review', title: 'На проверке', color: 'bg-yellow-500' },
+    { id: 'done', title: 'Готово', color: 'bg-green-500' },
+  ], []);
+
+  // Combine base and custom columns if showCustomColumns is true
+  const columnDefinitions = React.useMemo(() => {
+    console.log('[Dashboard] showCustomColumns:', showCustomColumns, 'customColumns:', customColumns);
+    if (showCustomColumns && customColumns.length > 0) {
+      console.log('[Dashboard] Showing custom columns:', customColumns);
+      return [...baseColumnDefinitions, ...customColumns];
+    }
+    console.log('[Dashboard] Showing only base columns');
+    return baseColumnDefinitions;
+  }, [baseColumnDefinitions, customColumns, showCustomColumns]);
+
+  const isOverdue = (deadline?: string) => {
+    if (!deadline) return false;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return new Date(deadline) < today;
   };
 
-  const filteredColumns = React.useMemo(() => {
-    const filterTasks = (task: Task) => {
+  // Filter tasks
+  const filteredTasks = React.useMemo(() => {
+    return tasks.filter((task) => {
       // Search query
       if (searchQuery) {
         const query = searchQuery.toLowerCase();
-        if (
-          !task.title.toLowerCase().includes(query) &&
-          !task.description.toLowerCase().includes(query)
-        ) {
+        if (!task.title.toLowerCase().includes(query)) {
           return false;
         }
       }
 
       // Filters
-      if (filters.projects.length > 0 && !filters.projects.includes(task.projectId)) {
-        return false;
+      if (filters.projects.length > 0) {
+        const projectMatch = filters.projects.includes(task.projectId || 'personal');
+        if (!projectMatch) return false;
       }
-      if (filters.categories.length > 0 && !filters.categories.includes(task.categoryId)) {
-        return false;
+      if (filters.categories.length > 0) {
+        const taskCategory = task.categoryId || 'none';
+        if (!filters.categories.includes(taskCategory)) {
+          return false;
+        }
       }
       if (filters.statuses.length > 0 && !filters.statuses.includes(task.status)) {
         return false;
@@ -234,218 +472,198 @@ export function KanbanBoard({
       if (filters.priorities.length > 0 && !filters.priorities.includes(task.priority)) {
         return false;
       }
-      if (filters.assignees.length > 0 && !filters.assignees.includes(task.assigneeId)) {
-        return false;
+      if (filters.assignees.length > 0) {
+        // Фильтр по исполнителям: проверяем assigneeId
+        if (!task.assigneeId || !filters.assignees.includes(task.assigneeId)) {
+          return false;
+        }
       }
-      if (filters.tags.length > 0) {
+      if (filters.tags.length > 0 && task.tags) {
         const hasTag = filters.tags.some((tag) => task.tags.includes(tag));
         if (!hasTag) return false;
       }
-      if (filters.deadlineFrom) {
-        const from = new Date(filters.deadlineFrom);
-        if (task.dueDateRaw < from) return false;
-      }
-      if (filters.deadlineTo) {
-        const to = new Date(filters.deadlineTo);
-        if (task.dueDateRaw > to) return false;
+
+      // Deadline filter
+      if (filters.deadline !== 'all') {
+        // Если у задачи нет дедлайна, исключаем её из фильтров дедлайна
+        if (!task.deadline) return false;
+
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        
+        const taskDeadline = new Date(task.deadline);
+        taskDeadline.setHours(0, 0, 0, 0);
+
+        if (filters.deadline === 'overdue') {
+          // Просрочено - deadline < сегодня
+          if (taskDeadline >= today) return false;
+        } else if (filters.deadline === 'today') {
+          // Сегодня - deadline === сегодня
+          if (taskDeadline.getTime() !== today.getTime()) return false;
+        } else if (filters.deadline === '3days') {
+          // 3 дня - deadline в течение следующих 3 дней (включая сегодня)
+          const threeDaysFromNow = new Date(today);
+          threeDaysFromNow.setDate(today.getDate() + 3);
+          if (taskDeadline < today || taskDeadline > threeDaysFromNow) return false;
+        } else if (filters.deadline === 'week') {
+          // На этой неделе - deadline до конца текущей недели (воскресенье)
+          const endOfWeek = new Date(today);
+          const dayOfWeek = today.getDay(); // 0 = Воскресенье, 1 = Понедельник, ...
+          const daysUntilSunday = dayOfWeek === 0 ? 0 : 7 - dayOfWeek;
+          endOfWeek.setDate(today.getDate() + daysUntilSunday);
+          if (taskDeadline < today || taskDeadline > endOfWeek) return false;
+        }
       }
 
       return true;
-    };
+    });
+    
+    console.log('[KanbanBoard] Filtering results:', {
+      totalTasks: tasks.length,
+      filteredTasks: result.length,
+      filters,
+      searchQuery,
+    });
+    
+    return result;
+  }, [tasks, searchQuery, filters]);
 
-    return mockColumns.map((column) => ({
-      ...column,
-      tasks: column.tasks.filter(filterTasks),
-    }));
-  }, [searchQuery, filters]);
+  // Group tasks by status into columns
+  const columns = React.useMemo(() => {
+    console.log('[Dashboard] Recalculating columns with columnDefinitions:', columnDefinitions.length);
+    return columnDefinitions.map((colDef) => {
+      const columnTasks = filteredTasks.filter((task) => task.status === colDef.id);
+      
+      // Apply custom order if exists
+      if (taskOrder[colDef.id]) {
+        const orderedTasks: TaskType[] = [];
+        const orderMap = new Map(columnTasks.map(t => [t.id, t]));
+        
+        // First add tasks in the specified order
+        taskOrder[colDef.id].forEach(taskId => {
+          const task = orderMap.get(taskId);
+          if (task) {
+            orderedTasks.push(task);
+            orderMap.delete(taskId);
+          }
+        });
+        
+        // Then add any remaining tasks
+        orderMap.forEach(task => orderedTasks.push(task));
+        
+        return { ...colDef, tasks: orderedTasks };
+      }
+      
+      return { ...colDef, tasks: columnTasks };
+    });
+  }, [columnDefinitions, filteredTasks, taskOrder]);
 
-  const groupedColumns = React.useMemo(() => {
-    if (groupBy === 'none') {
-      return filteredColumns;
+  // Handle task status change
+  const handleTaskStatusChange = async (taskId: string, newStatus: string) => {
+    try {
+      // Используем silent режим для перемещения карточек, чтобы не показывать toast каждый раз
+      await updateTask(taskId, { status: newStatus }, { silent: true });
+    } catch (error) {
+      console.error('Error updating task status:', error);
     }
-
-    // For grouping, we'll show tasks grouped within each column
-    return filteredColumns;
-  }, [filteredColumns, groupBy]);
-
-  const renderTaskCard = (task: Task) => {
-    const overdue = isOverdue(task.dueDateRaw);
-
-    return (
-      <Card
-        key={task.id}
-        className={`cursor-pointer hover:shadow-md transition-shadow ${
-          task.status === 'done' ? 'opacity-60' : ''
-        }`}
-        onClick={() => onTaskClick(task.id)}
-      >
-        <CardHeader className="pb-3">
-          <div className="flex items-start justify-between gap-2 mb-2">
-            <Badge className={task.projectColor} variant="secondary">
-              {task.project}
-            </Badge>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-6 w-6 -mt-1"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <MoreHorizontal className="w-4 h-4" />
-            </Button>
-          </div>
-          <h4 className={`mt-1 ${task.status === 'done' ? 'line-through text-gray-500' : ''}`}>
-            {task.title}
-          </h4>
-        </CardHeader>
-        <CardContent className="pb-3 space-y-3">
-          <div className="flex items-center gap-2 flex-wrap">
-            <Badge variant="outline" className={`${task.categoryColor} text-white border-0`}>
-              <Tag className="w-3 h-3 mr-1" />
-              {task.category}
-            </Badge>
-            
-            <Badge
-              variant="outline"
-              className={`${
-                task.priority === 'urgent'
-                  ? 'bg-orange-100 text-orange-700 border-orange-300'
-                  : task.priority === 'high'
-                  ? 'bg-red-100 text-red-700 border-red-300'
-                  : task.priority === 'medium'
-                  ? 'bg-yellow-100 text-yellow-700 border-yellow-300'
-                  : 'bg-gray-100 text-gray-700 border-gray-300'
-              }`}
-            >
-              {task.priority === 'urgent' && <Flame className="w-3 h-3 mr-1 fill-current" />}
-              {task.priority === 'urgent' && 'Срочный'}
-              {task.priority === 'high' && 'Высокий'}
-              {task.priority === 'medium' && 'Средний'}
-              {task.priority === 'low' && 'Низкий'}
-            </Badge>
-          </div>
-
-          {task.tags.length > 0 && (
-            <div className="flex items-center gap-1 flex-wrap">
-              {task.tags.map((tag) => (
-                <Badge key={tag} variant="secondary" className="text-xs">
-                  {tag}
-                </Badge>
-              ))}
-            </div>
-          )}
-
-          <div className="flex items-center justify-between text-sm">
-            <div className={`flex items-center gap-1 ${overdue ? 'text-red-600' : 'text-gray-500'}`}>
-              <Calendar className="w-4 h-4" />
-              <span className={overdue ? 'font-medium' : ''}>{task.dueDate}</span>
-            </div>
-            <Avatar className="w-6 h-6">
-              <AvatarFallback className="text-xs bg-purple-100 text-purple-600">
-                {task.assignee}
-              </AvatarFallback>
-            </Avatar>
-          </div>
-        </CardContent>
-      </Card>
-    );
   };
 
-  const renderGroupedTasks = (tasks: Task[]) => {
-    if (groupBy === 'none') {
-      return tasks.map(renderTaskCard);
+  // Handle moving card within or between columns
+  const handleMoveCard = (draggedId: string, targetId: string, position: 'before' | 'after') => {
+    const draggedTask = tasks.find(t => t.id === draggedId);
+    const targetTask = tasks.find(t => t.id === targetId);
+    
+    if (!draggedTask || !targetTask) return;
+
+    const targetStatus = targetTask.status;
+    
+    // Проверяем, является ли целевой столбец кастомным
+    const isTargetCustom = !baseColumnDefinitions.find(base => base.id === targetStatus);
+    
+    // Проверка 1: Если целевой столбец кастомный и задача из проекта - запрещаем перемещение
+    if (isTargetCustom && draggedTask.projectId) {
+      console.log('[KanbanBoard] Cannot move project task to custom column');
+      return;
     }
-
-    if (groupBy === 'project') {
-      const grouped = tasks.reduce((acc, task) => {
-        if (!acc[task.project]) acc[task.project] = [];
-        acc[task.project].push(task);
-        return acc;
-      }, {} as Record<string, Task[]>);
-
-      return Object.entries(grouped).map(([project, projectTasks]) => (
-        <div key={project} className="space-y-2">
-          <div className="text-sm text-gray-600 px-2 py-1">{project}</div>
-          {projectTasks.map(renderTaskCard)}
-        </div>
-      ));
+    
+    // Проверка 2: Если задача личная и целевой столбец базовый, проверяем доступность статуса
+    if (!draggedTask.projectId && !isTargetCustom) {
+      if (!PERSONAL_TASK_ALLOWED_STATUSES.includes(targetStatus)) {
+        console.log('[KanbanBoard] Cannot move personal task to unavailable status:', targetStatus);
+        return;
+      }
     }
-
-    if (groupBy === 'priority') {
-      const priorityOrder = ['high', 'medium', 'low'];
-      const grouped = tasks.reduce((acc, task) => {
-        if (!acc[task.priority]) acc[task.priority] = [];
-        acc[task.priority].push(task);
-        return acc;
-      }, {} as Record<string, Task[]>);
-
-      return priorityOrder.map((priority) => {
-        const priorityTasks = grouped[priority] || [];
-        if (priorityTasks.length === 0) return null;
-
-        const labels = { high: 'Высокий', medium: 'Средний', low: 'Низкий' };
-        return (
-          <div key={priority} className="space-y-2">
-            <div className="text-sm text-gray-600 px-2 py-1">{labels[priority as keyof typeof labels]}</div>
-            {priorityTasks.map(renderTaskCard)}
-          </div>
-        );
-      }).filter(Boolean);
+    
+    // Get current column tasks
+    const columnTasks = filteredTasks.filter(t => t.status === targetStatus);
+    const currentOrder = taskOrder[targetStatus] || columnTasks.map(t => t.id);
+    
+    // Remove dragged task from old position
+    const newOrder = currentOrder.filter(id => id !== draggedId);
+    
+    // Find target index
+    const targetIndex = newOrder.indexOf(targetId);
+    
+    // Insert at the correct position
+    if (targetIndex !== -1) {
+      const insertIndex = position === 'before' ? targetIndex : targetIndex + 1;
+      newOrder.splice(insertIndex, 0, draggedId);
+    } else {
+      // If target not found, add to end
+      newOrder.push(draggedId);
     }
+    
+    // Update order state
+    setTaskOrder(prev => ({
+      ...prev,
+      [targetStatus]: newOrder,
+    }));
 
-    return tasks.map(renderTaskCard);
+    // If moving to a different status, update status
+    if (draggedTask.status !== targetStatus) {
+      handleTaskStatusChange(draggedId, targetStatus);
+    }
   };
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden bg-gray-50">
-      <div className="border-b bg-white px-6 py-3">
-        <div className="flex items-center gap-4">
-          <Label className="text-sm text-gray-600">Группировка:</Label>
-          <div className="flex gap-2">
-            <Button
-              variant={groupBy === 'none' ? 'default' : 'outline'}
-              size="sm"
-              onClick={() => setGroupBy('none')}
-              className={groupBy === 'none' ? 'bg-purple-600' : ''}
-            >
-              Без группировки
-            </Button>
-            <Button
-              variant={groupBy === 'project' ? 'default' : 'outline'}
-              size="sm"
-              onClick={() => setGroupBy('project')}
-              className={groupBy === 'project' ? 'bg-purple-600' : ''}
-            >
-              По проекту
-            </Button>
-            <Button
-              variant={groupBy === 'priority' ? 'default' : 'outline'}
-              size="sm"
-              onClick={() => setGroupBy('priority')}
-              className={groupBy === 'priority' ? 'bg-purple-600' : ''}
-            >
-              По приоритету
-            </Button>
-          </div>
-        </div>
-      </div>
+    <div className="flex-1 flex flex-col bg-gray-50 h-full overflow-hidden">
+      {/* Группировка (пока отключена) */}
+      {/* <div className="flex items-center gap-4 px-4 md:px-6 py-3 border-b bg-white">
+        <Label htmlFor="group-by" className="text-sm">
+          Группировать по:
+        </Label>
+        <Switch
+          id="group-by"
+          checked={groupBy !== 'none'}
+          onCheckedChange={(checked) => setGroupBy(checked ? 'project' : 'none')}
+        />
+        <span className="text-sm text-gray-600">
+          {groupBy === 'none' ? 'Без группировки' : 'По проектам'}
+        </span>
+      </div> */}
 
-      <div className="flex-1 overflow-x-auto overflow-y-hidden">
-        <div className="flex gap-4 p-6 h-full min-w-max">
-          {groupedColumns.map((column) => (
-            <div key={column.id} className="flex flex-col w-80 flex-shrink-0">
-              <div className="flex items-center gap-2 mb-4">
-                <div className={`w-3 h-3 rounded-full ${column.color}`} />
-                <h3 className="text-gray-900">{column.title}</h3>
-                <Badge variant="secondary" className="ml-auto">
-                  {column.tasks.length}
-                </Badge>
-              </div>
-
-              <div className="flex-1 space-y-3 overflow-y-auto">
-                {renderGroupedTasks(column.tasks)}
-              </div>
-            </div>
-          ))}
+      <div className="flex-1 overflow-x-auto overflow-y-hidden p-4 md:p-6">
+        <div className="flex gap-4 h-full min-w-max">
+          {columns.map((column) => {
+            const isCustom = !baseColumnDefinitions.find(base => base.id === column.id);
+            console.log('[Dashboard] Rendering column:', column.id, column.title, 'isCustom:', isCustom, 'tasks:', column.tasks.length);
+            return (
+              <DroppableColumn
+                key={column.id}
+                columnId={column.id}
+                title={column.title}
+                color={column.color}
+                tasks={column.tasks}
+                onDrop={handleTaskStatusChange}
+                onTaskClick={onTaskClick}
+                isOverdue={isOverdue}
+                moveCardWithinColumn={handleMoveCard}
+                isCustom={isCustom}
+                allTasks={tasks}
+                baseColumnDefinitions={baseColumnDefinitions}
+              />
+            );
+          })}
         </div>
       </div>
     </div>

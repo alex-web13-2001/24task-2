@@ -1,462 +1,429 @@
-import Task from '../models/Task.js';
-import Project from '../models/Project.js';
-import TaskHistory from '../models/TaskHistory.js';
-import Tag from '../models/Tag.js';
+const { Task, User, Project, ProjectMember, Category, TaskAttachment, TaskComment } = require('../models');
+const { Op } = require('sequelize');
 
-/**
- * Получение всех задач (с фильтрами)
- */
-export const getTasks = async (req, res, next) => {
+// Get all tasks
+exports.getAllTasks = async (req, res, next) => {
   try {
-    const userId = req.user._id;
-    const {
-      projectId,
-      status,
-      priority,
-      categoryId,
-      assignee,
-      tags,
-      archived,
-      search,
-      personal
-    } = req.query;
+    const userId = req.user.id;
+    const { project_id, status, priority, assignee_id } = req.query;
 
-    let query = {};
+    // Build where clause
+    const where = {
+      archived: false
+    };
 
-    // Личные задачи или задачи из проектов
-    if (personal === 'true') {
-      query.projectId = null;
-      query.authorId = userId;
-    } else if (projectId) {
-      query.projectId = projectId;
-    } else {
-      // Все задачи пользователя (из проектов где он участник + личные)
-      const userProjects = await Project.find({
-        $or: [
-          { ownerId: userId },
-          { 'members.userId': userId }
+    if (project_id) {
+      where.project_id = project_id;
+    }
+    if (status) {
+      where.status = status;
+    }
+    if (priority) {
+      where.priority = priority;
+    }
+    if (assignee_id) {
+      where.assignee_id = assignee_id;
+    }
+
+    // Get user's project IDs
+    const projectMembers = await ProjectMember.findAll({
+      where: { user_id: userId },
+      attributes: ['project_id']
+    });
+    const projectIds = projectMembers.map(pm => pm.project_id);
+
+    // Get tasks where user is creator, assignee, or member of project
+    const tasks = await Task.findAll({
+      where: {
+        ...where,
+        [Op.or]: [
+          { created_by: userId },
+          { assignee_id: userId },
+          { project_id: { [Op.in]: projectIds } },
+          { project_id: null } // Personal tasks
         ]
-      }).select('_id');
-
-      const projectIds = userProjects.map(p => p._id);
-
-      query.$or = [
-        { projectId: { $in: projectIds } },
-        { projectId: null, authorId: userId }
-      ];
-    }
-
-    // Фильтры
-    if (status) query.status = status;
-    if (priority) query.priority = priority;
-    if (categoryId) query.categoryId = categoryId;
-    if (assignee) query.assignee = assignee;
-    if (tags) query.tags = { $in: Array.isArray(tags) ? tags : [tags] };
-    if (archived !== undefined) query.archived = archived === 'true';
-
-    // Поиск
-    if (search) {
-      query.$text = { $search: search };
-    }
-
-    const tasks = await Task.find(query)
-      .populate('projectId', 'title color')
-      .populate('categoryId', 'title color')
-      .populate('assignee', 'name email avatar')
-      .populate('authorId', 'name email avatar')
-      .populate('files')
-      .sort({ createdAt: -1 });
+      },
+      include: [
+        {
+          model: User,
+          as: 'creator',
+          attributes: ['id', 'name', 'email', 'avatar_url']
+        },
+        {
+          model: User,
+          as: 'assignee',
+          attributes: ['id', 'name', 'email', 'avatar_url']
+        },
+        {
+          model: Project,
+          as: 'project',
+          attributes: ['id', 'name', 'color']
+        },
+        {
+          model: Category,
+          as: 'category',
+          attributes: ['id', 'name', 'color']
+        },
+        {
+          model: TaskAttachment,
+          as: 'attachments',
+          attributes: ['id', 'name', 'url', 'size', 'uploaded_at']
+        },
+        {
+          model: TaskComment,
+          as: 'comments',
+          include: [{
+            model: User,
+            as: 'user',
+            attributes: ['id', 'name', 'email', 'avatar_url']
+          }]
+        }
+      ],
+      order: [['created_at', 'DESC']]
+    });
 
     res.json({
       success: true,
-      data: tasks
+      tasks
     });
   } catch (error) {
     next(error);
   }
 };
 
-/**
- * Получение задачи по ID
- */
-export const getTaskById = async (req, res, next) => {
+// Create task
+exports.createTask = async (req, res, next) => {
   try {
-    const { id } = req.params;
-    const userId = req.user._id;
-
-    const task = await Task.findById(id)
-      .populate('projectId', 'title color')
-      .populate('categoryId', 'title color')
-      .populate('assignee', 'name email avatar')
-      .populate('authorId', 'name email avatar')
-      .populate('files');
-
-    if (!task) {
-      return res.status(404).json({
-        success: false,
-        message: 'Задача не найдена'
-      });
-    }
-
-    // Проверка доступа
-    if (task.projectId) {
-      const project = await Project.findById(task.projectId);
-      if (!project || !project.hasAccess(userId)) {
-        return res.status(403).json({
-          success: false,
-          message: 'Нет доступа к этой задаче'
-        });
-      }
-    } else {
-      // Личная задача - доступна только автору
-      if (task.authorId._id.toString() !== userId.toString()) {
-        return res.status(403).json({
-          success: false,
-          message: 'Нет доступа к этой задаче'
-        });
-      }
-    }
-
-    res.json({
-      success: true,
-      data: task
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-/**
- * Создание новой задачи
- */
-export const createTask = async (req, res, next) => {
-  try {
-    const userId = req.user._id;
     const {
       title,
       description,
-      projectId,
-      categoryId,
-      tags,
-      priority,
       status,
-      assignee,
-      deadline
+      priority,
+      project_id,
+      assignee_id,
+      category_id,
+      due_date
     } = req.body;
 
-    // Если задача в проекте, проверяем права
-    if (projectId) {
-      const project = await Project.findById(projectId);
-      if (!project) {
-        return res.status(404).json({
-          success: false,
-          message: 'Проект не найден'
-        });
-      }
+    // Validate required fields
+    if (!title) {
+      return res.status(400).json({
+        success: false,
+        error: 'Title is required'
+      });
+    }
 
-      const userRole = project.getUserRole(userId);
-      if (!userRole) {
+    // Check project access if project_id is provided
+    if (project_id) {
+      const projectMember = await ProjectMember.findOne({
+        where: {
+          project_id,
+          user_id: req.user.id
+        }
+      });
+
+      if (!projectMember) {
         return res.status(403).json({
           success: false,
-          message: 'Нет доступа к этому проекту'
-        });
-      }
-
-      // Member может создавать только свои задачи
-      if (userRole === 'Member' && assignee && assignee !== userId.toString()) {
-        return res.status(403).json({
-          success: false,
-          message: 'У вас нет прав назначать задачи другим пользователям'
-        });
-      }
-
-      // Viewer не может создавать задачи
-      if (userRole === 'Viewer') {
-        return res.status(403).json({
-          success: false,
-          message: 'У вас нет прав создавать задачи в этом проекте'
+          error: 'You do not have access to this project'
         });
       }
     }
 
-    // Создание задачи
+    // Create task
     const task = await Task.create({
       title,
       description,
-      projectId: projectId || null,
-      categoryId,
-      tags,
-      priority,
-      status: status || 'Assigned',
-      assignee,
-      deadline,
-      authorId: userId
+      status: status || 'к выполнению',
+      priority: priority || 'средний',
+      project_id: project_id || null,
+      assignee_id: assignee_id || null,
+      category_id: category_id || null,
+      due_date: due_date || null,
+      created_by: req.user.id
     });
 
-    // Обновление счетчика использования тегов
-    if (tags && tags.length > 0) {
-      await updateTagsUsage(tags);
-    }
-
-    // Создание записи в истории
-    await TaskHistory.create({
-      taskId: task._id,
-      userId,
-      type: 'created',
-      newValue: task.title
+    // Fetch task with associations
+    const createdTask = await Task.findByPk(task.id, {
+      include: [
+        {
+          model: User,
+          as: 'creator',
+          attributes: ['id', 'name', 'email', 'avatar_url']
+        },
+        {
+          model: User,
+          as: 'assignee',
+          attributes: ['id', 'name', 'email', 'avatar_url']
+        },
+        {
+          model: Project,
+          as: 'project',
+          attributes: ['id', 'name', 'color']
+        },
+        {
+          model: Category,
+          as: 'category',
+          attributes: ['id', 'name', 'color']
+        }
+      ]
     });
-
-    await task.populate('projectId', 'title color');
-    await task.populate('categoryId', 'title color');
-    await task.populate('assignee', 'name email avatar');
-    await task.populate('authorId', 'name email avatar');
 
     res.status(201).json({
       success: true,
-      message: 'Задача успешно создана',
-      data: task
+      task: createdTask
     });
   } catch (error) {
     next(error);
   }
 };
 
-/**
- * Обновление задачи
- */
-export const updateTask = async (req, res, next) => {
+// Get task by ID
+exports.getTask = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const userId = req.user._id;
-    const updates = req.body;
 
-    const task = await Task.findById(id);
+    const task = await Task.findByPk(id, {
+      include: [
+        {
+          model: User,
+          as: 'creator',
+          attributes: ['id', 'name', 'email', 'avatar_url']
+        },
+        {
+          model: User,
+          as: 'assignee',
+          attributes: ['id', 'name', 'email', 'avatar_url']
+        },
+        {
+          model: Project,
+          as: 'project',
+          attributes: ['id', 'name', 'color']
+        },
+        {
+          model: Category,
+          as: 'category',
+          attributes: ['id', 'name', 'color']
+        },
+        {
+          model: TaskAttachment,
+          as: 'attachments'
+        },
+        {
+          model: TaskComment,
+          as: 'comments',
+          include: [{
+            model: User,
+            as: 'user',
+            attributes: ['id', 'name', 'email', 'avatar_url']
+          }]
+        }
+      ]
+    });
 
     if (!task) {
       return res.status(404).json({
         success: false,
-        message: 'Задача не найдена'
+        error: 'Task not found'
       });
     }
 
-    // Проверка прав
-    let canEdit = false;
-
-    if (task.projectId) {
-      const project = await Project.findById(task.projectId);
-      if (!project) {
-        return res.status(404).json({
-          success: false,
-          message: 'Проект не найден'
-        });
-      }
-
-      const userRole = project.getUserRole(userId);
-      
-      if (userRole === 'Owner' || userRole === 'Collaborator') {
-        canEdit = true;
-      } else if (userRole === 'Member' && task.authorId.toString() === userId.toString()) {
-        canEdit = true;
-      }
-    } else {
-      // Личная задача - только автор может редактировать
-      canEdit = task.authorId.toString() === userId.toString();
-    }
-
-    if (!canEdit) {
+    // Check access
+    const hasAccess = await checkTaskAccess(task, req.user.id);
+    if (!hasAccess) {
       return res.status(403).json({
         success: false,
-        message: 'Недостаточно прав для редактирования задачи'
+        error: 'Access denied'
       });
     }
-
-    // Сохранение старых значений для истории
-    const oldValues = {
-      status: task.status,
-      priority: task.priority,
-      assignee: task.assignee
-    };
-
-    // Обновление полей
-    const allowedUpdates = ['title', 'description', 'categoryId', 'tags', 'priority', 'status', 'assignee', 'deadline'];
-    allowedUpdates.forEach(field => {
-      if (updates[field] !== undefined) {
-        task[field] = updates[field];
-      }
-    });
-
-    await task.save();
-
-    // Создание записей в истории
-    if (updates.status && updates.status !== oldValues.status) {
-      await TaskHistory.create({
-        taskId: task._id,
-        userId,
-        type: 'statusChange',
-        oldValue: oldValues.status,
-        newValue: updates.status
-      });
-    }
-
-    if (updates.priority && updates.priority !== oldValues.priority) {
-      await TaskHistory.create({
-        taskId: task._id,
-        userId,
-        type: 'priorityChange',
-        oldValue: oldValues.priority,
-        newValue: updates.priority
-      });
-    }
-
-    if (updates.assignee && updates.assignee !== oldValues.assignee?.toString()) {
-      await TaskHistory.create({
-        taskId: task._id,
-        userId,
-        type: 'assigneeChange',
-        oldValue: oldValues.assignee,
-        newValue: updates.assignee
-      });
-    }
-
-    if (updates.title || updates.description) {
-      await TaskHistory.create({
-        taskId: task._id,
-        userId,
-        type: 'edit',
-        newValue: 'Задача отредактирована'
-      });
-    }
-
-    // Обновление тегов
-    if (updates.tags) {
-      await updateTagsUsage(updates.tags);
-    }
-
-    await task.populate('projectId', 'title color');
-    await task.populate('categoryId', 'title color');
-    await task.populate('assignee', 'name email avatar');
-    await task.populate('authorId', 'name email avatar');
 
     res.json({
       success: true,
-      message: 'Задача успешно обновлена',
-      data: task
+      task
     });
   } catch (error) {
     next(error);
   }
 };
 
-/**
- * Удаление задачи
- */
-export const deleteTask = async (req, res, next) => {
+// Update task
+exports.updateTask = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const userId = req.user._id;
+    const updates = req.body;
 
-    const task = await Task.findById(id);
+    const task = await Task.findByPk(id);
 
     if (!task) {
       return res.status(404).json({
         success: false,
-        message: 'Задача не найдена'
+        error: 'Task not found'
       });
     }
 
-    // Проверка прав (только автор или Owner/Collaborator проекта)
-    let canDelete = false;
+    // Check access
+    const hasAccess = await checkTaskAccess(task, req.user.id);
+    if (!hasAccess) {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied'
+      });
+    }
 
-    if (task.projectId) {
-      const project = await Project.findById(task.projectId);
-      if (project) {
-        const userRole = project.getUserRole(userId);
-        canDelete = userRole === 'Owner' || userRole === 'Collaborator' || 
-                   (userRole === 'Member' && task.authorId.toString() === userId.toString());
-      }
-    } else {
-      canDelete = task.authorId.toString() === userId.toString();
+    // Update task
+    await task.update(updates);
+
+    // Fetch updated task with associations
+    const updatedTask = await Task.findByPk(id, {
+      include: [
+        {
+          model: User,
+          as: 'creator',
+          attributes: ['id', 'name', 'email', 'avatar_url']
+        },
+        {
+          model: User,
+          as: 'assignee',
+          attributes: ['id', 'name', 'email', 'avatar_url']
+        },
+        {
+          model: Project,
+          as: 'project',
+          attributes: ['id', 'name', 'color']
+        },
+        {
+          model: Category,
+          as: 'category',
+          attributes: ['id', 'name', 'color']
+        }
+      ]
+    });
+
+    res.json({
+      success: true,
+      task: updatedTask
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Delete task
+exports.deleteTask = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    const task = await Task.findByPk(id);
+
+    if (!task) {
+      return res.status(404).json({
+        success: false,
+        error: 'Task not found'
+      });
+    }
+
+    // Check if user is creator or project owner
+    let canDelete = task.created_by === req.user.id;
+
+    if (task.project_id && !canDelete) {
+      const project = await Project.findByPk(task.project_id);
+      canDelete = project && project.owner_id === req.user.id;
     }
 
     if (!canDelete) {
       return res.status(403).json({
         success: false,
-        message: 'Недостаточно прав для удаления задачи'
+        error: 'Only task creator or project owner can delete this task'
       });
     }
 
-    // Удаление истории задачи
-    await TaskHistory.deleteMany({ taskId: task._id });
-
-    // Удаление задачи
-    await task.deleteOne();
+    await task.destroy();
 
     res.json({
-      success: true,
-      message: 'Задача успешно удалена'
+      success: true
     });
   } catch (error) {
     next(error);
   }
 };
 
-/**
- * Получение истории задачи
- */
-export const getTaskHistory = async (req, res, next) => {
+// Add comment
+exports.addComment = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const userId = req.user._id;
+    const { text } = req.body;
 
-    const task = await Task.findById(id);
+    if (!text) {
+      return res.status(400).json({
+        success: false,
+        error: 'Comment text is required'
+      });
+    }
+
+    const task = await Task.findByPk(id);
 
     if (!task) {
       return res.status(404).json({
         success: false,
-        message: 'Задача не найдена'
+        error: 'Task not found'
       });
     }
 
-    // Проверка доступа
-    if (task.projectId) {
-      const project = await Project.findById(task.projectId);
-      if (!project || !project.hasAccess(userId)) {
-        return res.status(403).json({
-          success: false,
-          message: 'Нет доступа к этой задаче'
-        });
-      }
-    } else {
-      if (task.authorId.toString() !== userId.toString()) {
-        return res.status(403).json({
-          success: false,
-          message: 'Нет доступа к этой задаче'
-        });
-      }
+    // Check access
+    const hasAccess = await checkTaskAccess(task, req.user.id);
+    if (!hasAccess) {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied'
+      });
     }
 
-    const history = await TaskHistory.find({ taskId: id })
-      .populate('userId', 'name email avatar')
-      .sort({ createdAt: -1 });
+    // Create comment
+    const comment = await TaskComment.create({
+      task_id: id,
+      user_id: req.user.id,
+      text
+    });
 
-    res.json({
+    // Fetch comment with user
+    const createdComment = await TaskComment.findByPk(comment.id, {
+      include: [{
+        model: User,
+        as: 'user',
+        attributes: ['id', 'name', 'email', 'avatar_url']
+      }]
+    });
+
+    res.status(201).json({
       success: true,
-      data: history
+      comment: createdComment
     });
   } catch (error) {
     next(error);
   }
 };
 
-/**
- * Вспомогательная функция для обновления счетчика использования тегов
- */
-async function updateTagsUsage(tags) {
-  for (const tagName of tags) {
-    await Tag.findOneAndUpdate(
-      { name: tagName.toLowerCase() },
-      { $inc: { usageCount: 1 } },
-      { upsert: true, new: true }
-    );
+// Helper function to check task access
+async function checkTaskAccess(task, userId) {
+  // Creator or assignee has access
+  if (task.created_by === userId || task.assignee_id === userId) {
+    return true;
   }
+
+  // Personal task (no project)
+  if (!task.project_id) {
+    return false;
+  }
+
+  // Check if user is project member
+  const projectMember = await ProjectMember.findOne({
+    where: {
+      project_id: task.project_id,
+      user_id: userId
+    }
+  });
+
+  return !!projectMember;
 }
+
+module.exports = exports;

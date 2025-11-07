@@ -8,6 +8,7 @@ import {
   TableRow,
 } from './ui/table';
 import { Badge } from './ui/badge';
+import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
 import { Button } from './ui/button';
 import { Checkbox } from './ui/checkbox';
 import { MoreHorizontal, ArrowUpDown, ArrowUp, ArrowDown, Flame } from 'lucide-react';
@@ -17,111 +18,35 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from './ui/dropdown-menu';
+import { useApp } from '../contexts/app-context';
+import { format } from 'date-fns';
+import { ru } from 'date-fns/locale';
+import type { Task as TaskType } from '../contexts/app-context';
 
-type Task = {
-  id: string;
-  title: string;
-  status: string;
-  statusId: string;
-  priority: 'low' | 'medium' | 'high';
-  dueDate: string;
-  dueDateRaw: Date;
-  updatedAt: string;
-  updatedAtRaw: Date;
-  tags: string[];
+const baseStatusColors: Record<string, string> = {
+  'todo': 'bg-gray-100 text-gray-700',
+  'in_progress': 'bg-blue-100 text-blue-700',
+  'done': 'bg-green-100 text-green-700',
 };
 
-const mockTasks: Task[] = [
-  {
-    id: '1',
-    title: 'Купить продукты на неделю',
-    status: 'Assigned',
-    statusId: 'assigned',
-    priority: 'medium',
-    dueDate: '15 ноя 2024',
-    dueDateRaw: new Date('2024-11-15'),
-    updatedAt: '2 часа назад',
-    updatedAtRaw: new Date(Date.now() - 2 * 60 * 60 * 1000),
-    tags: ['покупки', 'дом'],
-  },
-  {
-    id: '2',
-    title: 'Записаться к врачу',
-    status: 'Assigned',
-    statusId: 'assigned',
-    priority: 'high',
-    dueDate: '12 ноя 2024',
-    dueDateRaw: new Date('2024-11-12'),
-    updatedAt: '1 час назад',
-    updatedAtRaw: new Date(Date.now() - 1 * 60 * 60 * 1000),
-    tags: ['здоровье', 'срочно'],
-  },
-  {
-    id: '3',
-    title: 'Подготовиться к презентации',
-    status: 'Assigned',
-    statusId: 'assigned',
-    priority: 'high',
-    dueDate: '13 ноя 2024',
-    dueDateRaw: new Date('2024-11-13'),
-    updatedAt: '3 часа назад',
-    updatedAtRaw: new Date(Date.now() - 3 * 60 * 60 * 1000),
-    tags: ['работа', 'презентация'],
-  },
-  {
-    id: '4',
-    title: 'Изучить новый фреймворк',
-    status: 'In Progress',
-    statusId: 'in-progress',
-    priority: 'medium',
-    dueDate: '20 ноя 2024',
-    dueDateRaw: new Date('2024-11-20'),
-    updatedAt: '30 минут назад',
-    updatedAtRaw: new Date(Date.now() - 30 * 60 * 1000),
-    tags: ['обучение', 'разработка'],
-  },
-  {
-    id: '5',
-    title: 'Организовать рабочий стол',
-    status: 'In Progress',
-    statusId: 'in-progress',
-    priority: 'low',
-    dueDate: '18 ноя 2024',
-    dueDateRaw: new Date('2024-11-18'),
-    updatedAt: '5 часов назад',
-    updatedAtRaw: new Date(Date.now() - 5 * 60 * 60 * 1000),
-    tags: ['организация', 'дом'],
-  },
-  {
-    id: '6',
-    title: 'Оплатить счета',
-    status: 'Done',
-    statusId: 'done',
-    priority: 'medium',
-    dueDate: '10 ноя 2024',
-    dueDateRaw: new Date('2024-11-10'),
-    updatedAt: '1 день назад',
-    updatedAtRaw: new Date(Date.now() - 24 * 60 * 60 * 1000),
-    tags: ['финансы'],
-  },
-  {
-    id: '7',
-    title: 'Прочитать статью по React',
-    status: 'Done',
-    statusId: 'done',
-    priority: 'low',
-    dueDate: '8 ноя 2024',
-    dueDateRaw: new Date('2024-11-08'),
-    updatedAt: '2 дня назад',
-    updatedAtRaw: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000),
-    tags: ['обучение', 'react'],
-  },
-];
+const baseStatusLabels: Record<string, string> = {
+  'todo': 'К выполнению',
+  'in_progress': 'В работе',
+  'done': 'Готово',
+};
 
-const statusColors = {
-  'Assigned': 'bg-gray-100 text-gray-700',
-  'In Progress': 'bg-blue-100 text-blue-700',
-  'Done': 'bg-green-100 text-green-700',
+const priorityColors = {
+  low: 'bg-gray-100 text-gray-700',
+  medium: 'bg-yellow-100 text-yellow-700',
+  high: 'bg-red-100 text-red-700',
+  urgent: 'bg-orange-100 text-orange-700',
+};
+
+const priorityLabels = {
+  low: 'Низкий',
+  medium: 'Средний',
+  high: 'Высокий',
+  urgent: 'Срочный',
 };
 
 type SortColumn = 'title' | 'status' | 'priority' | 'dueDate' | 'updatedAt';
@@ -129,65 +54,92 @@ type SortDirection = 'asc' | 'desc' | null;
 
 type PersonalTaskTableProps = {
   filters: {
-    status: string;
-    priority: string;
+    priorities: string[];
     deadline: string;
   };
   onTaskClick: (taskId: string) => void;
 };
 
 export function PersonalTaskTable({ filters, onTaskClick }: PersonalTaskTableProps) {
-  const [selectedTasks, setSelectedTasks] = React.useState<string[]>([]);
+  const { tasks, currentUser, teamMembers, customColumns } = useApp();
   const [sortColumn, setSortColumn] = React.useState<SortColumn | null>(null);
   const [sortDirection, setSortDirection] = React.useState<SortDirection>(null);
 
-  const isOverdue = (dueDate: Date) => {
+  // Build dynamic status colors and labels
+  const statusColors = React.useMemo(() => {
+    const colors = { ...baseStatusColors };
+    customColumns.forEach(col => {
+      colors[col.id] = 'bg-purple-100 text-purple-700'; // Default color for custom columns
+    });
+    return colors;
+  }, [customColumns]);
+
+  const statusLabels = React.useMemo(() => {
+    const labels = { ...baseStatusLabels };
+    customColumns.forEach(col => {
+      labels[col.id] = col.title;
+    });
+    return labels;
+  }, [customColumns]);
+
+  // Получаем личные задачи (где assigneeId = currentUser.id)
+  const personalTasks = React.useMemo(() => {
+    return tasks.filter(task => 
+      !task.projectId && task.assigneeId === currentUser?.id
+    );
+  }, [tasks, currentUser]);
+
+  const isOverdue = (deadline?: string) => {
+    if (!deadline) return false;
+    const dueDate = new Date(deadline);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     return dueDate < today;
   };
 
-  const isToday = (dueDate: Date) => {
-    const today = new Date();
-    return dueDate.toDateString() === today.toDateString();
-  };
-
-  const isThisWeek = (dueDate: Date) => {
-    const today = new Date();
-    const weekFromNow = new Date();
-    weekFromNow.setDate(today.getDate() + 7);
-    return dueDate >= today && dueDate <= weekFromNow;
-  };
-
-  const isThisMonth = (dueDate: Date) => {
-    const today = new Date();
-    return dueDate.getMonth() === today.getMonth() && dueDate.getFullYear() === today.getFullYear();
-  };
-
   const filteredAndSortedTasks = React.useMemo(() => {
-    const filterTasks = (task: Task) => {
-      // Фильтр по статусу
-      if (filters.status !== 'all' && task.statusId !== filters.status) {
-        return false;
-      }
-
+    const filterTasks = (task: TaskType) => {
       // Фильтр по приоритету
-      if (filters.priority !== 'all' && task.priority !== filters.priority) {
+      if (filters.priorities.length > 0 && !filters.priorities.includes(task.priority)) {
         return false;
       }
 
       // Фильтр по дедлайну
       if (filters.deadline !== 'all') {
-        if (filters.deadline === 'overdue' && !isOverdue(task.dueDateRaw)) return false;
-        if (filters.deadline === 'today' && !isToday(task.dueDateRaw)) return false;
-        if (filters.deadline === 'week' && !isThisWeek(task.dueDateRaw)) return false;
-        if (filters.deadline === 'month' && !isThisMonth(task.dueDateRaw)) return false;
+        // Если у задачи нет дедлайна, исключаем её из фильтров дедлайна
+        if (!task.deadline) return false;
+
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        
+        const taskDeadline = new Date(task.deadline);
+        taskDeadline.setHours(0, 0, 0, 0);
+
+        if (filters.deadline === 'overdue') {
+          // Просрочено - deadline < сегодня
+          if (taskDeadline >= today) return false;
+        } else if (filters.deadline === 'today') {
+          // Сегодня - deadline === сегодня
+          if (taskDeadline.getTime() !== today.getTime()) return false;
+        } else if (filters.deadline === '3days') {
+          // 3 дня - deadline в течение следующих 3 дней (включая сегодня)
+          const threeDaysFromNow = new Date(today);
+          threeDaysFromNow.setDate(today.getDate() + 3);
+          if (taskDeadline < today || taskDeadline > threeDaysFromNow) return false;
+        } else if (filters.deadline === 'week') {
+          // На этой неделе - deadline до конца текущей недели (воскресенье)
+          const endOfWeek = new Date(today);
+          const dayOfWeek = today.getDay(); // 0 = Воскресенье, 1 = Понедельник, ...
+          const daysUntilSunday = dayOfWeek === 0 ? 0 : 7 - dayOfWeek;
+          endOfWeek.setDate(today.getDate() + daysUntilSunday);
+          if (taskDeadline < today || taskDeadline > endOfWeek) return false;
+        }
       }
 
       return true;
     };
 
-    let result = mockTasks.filter(filterTasks);
+    let result = personalTasks.filter(filterTasks);
 
     if (sortColumn && sortDirection) {
       result.sort((a, b) => {
@@ -196,16 +148,16 @@ export function PersonalTaskTable({ filters, onTaskClick }: PersonalTaskTablePro
 
         // Handle date columns
         if (sortColumn === 'dueDate') {
-          aVal = a.dueDateRaw;
-          bVal = b.dueDateRaw;
+          aVal = a.deadline ? new Date(a.deadline) : new Date(0);
+          bVal = b.deadline ? new Date(b.deadline) : new Date(0);
         } else if (sortColumn === 'updatedAt') {
-          aVal = a.updatedAtRaw;
-          bVal = b.updatedAtRaw;
+          aVal = a.updatedAt ? new Date(a.updatedAt) : new Date(0);
+          bVal = b.updatedAt ? new Date(b.updatedAt) : new Date(0);
         }
 
         // Handle priority
         if (sortColumn === 'priority') {
-          const priorityOrder = { high: 3, medium: 2, low: 1 };
+          const priorityOrder = { urgent: 4, high: 3, medium: 2, low: 1 };
           aVal = priorityOrder[a.priority];
           bVal = priorityOrder[b.priority];
         }
@@ -217,21 +169,9 @@ export function PersonalTaskTable({ filters, onTaskClick }: PersonalTaskTablePro
     }
 
     return result;
-  }, [filters, sortColumn, sortDirection]);
+  }, [personalTasks, filters, sortColumn, sortDirection]);
 
-  const toggleTask = (taskId: string) => {
-    setSelectedTasks((prev) =>
-      prev.includes(taskId) ? prev.filter((id) => id !== taskId) : [...prev, taskId]
-    );
-  };
 
-  const toggleAll = () => {
-    if (selectedTasks.length === filteredAndSortedTasks.length) {
-      setSelectedTasks([]);
-    } else {
-      setSelectedTasks(filteredAndSortedTasks.map((task) => task.id));
-    }
-  };
 
   const handleSort = (column: SortColumn) => {
     if (sortColumn === column) {
@@ -258,20 +198,21 @@ export function PersonalTaskTable({ filters, onTaskClick }: PersonalTaskTablePro
     );
   };
 
+  const getInitials = (name?: string) => {
+    if (!name) return '?';
+    return name
+      .split(' ')
+      .map(part => part[0])
+      .join('')
+      .toUpperCase()
+      .slice(0, 2);
+  };
+
   return (
     <div className="flex-1 overflow-auto bg-white">
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead className="w-12">
-              <Checkbox
-                checked={
-                  selectedTasks.length === filteredAndSortedTasks.length &&
-                  filteredAndSortedTasks.length > 0
-                }
-                onCheckedChange={toggleAll}
-              />
-            </TableHead>
             <TableHead>
               <button
                 className="flex items-center hover:text-purple-600"
@@ -308,6 +249,7 @@ export function PersonalTaskTable({ filters, onTaskClick }: PersonalTaskTablePro
                 <SortIcon column="dueDate" />
               </button>
             </TableHead>
+            <TableHead>Исполнитель</TableHead>
             <TableHead>Теги</TableHead>
             <TableHead>
               <button
@@ -318,85 +260,97 @@ export function PersonalTaskTable({ filters, onTaskClick }: PersonalTaskTablePro
                 <SortIcon column="updatedAt" />
               </button>
             </TableHead>
-            <TableHead className="w-12"></TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
-          {filteredAndSortedTasks.map((task) => {
-            const overdue = isOverdue(task.dueDateRaw);
-            return (
-              <TableRow
-                key={task.id}
-                className="cursor-pointer hover:bg-gray-50"
-                onClick={() => onTaskClick(task.id)}
-              >
-                <TableCell onClick={(e) => e.stopPropagation()}>
-                  <Checkbox
-                    checked={selectedTasks.includes(task.id)}
-                    onCheckedChange={() => toggleTask(task.id)}
-                  />
-                </TableCell>
-                <TableCell>
-                  <div className="max-w-md">
-                    <p className="truncate">{task.title}</p>
-                  </div>
-                </TableCell>
-                <TableCell>
-                  <Badge variant="outline" className={statusColors[task.status as keyof typeof statusColors]}>
-                    {task.status}
-                  </Badge>
-                </TableCell>
-                <TableCell>
-                  <div className="flex items-center gap-2">
-                    {task.priority === 'high' && (
-                      <Flame className="w-4 h-4 text-red-600 fill-current" />
+          {filteredAndSortedTasks.length === 0 ? (
+            <TableRow>
+              <TableCell colSpan={7} className="text-center text-gray-500 py-8">
+                Задачи не найдены
+              </TableCell>
+            </TableRow>
+          ) : (
+            filteredAndSortedTasks.map((task) => {
+              const overdue = isOverdue(task.deadline);
+              const assignee = teamMembers?.find((m) => m.id === task.assigneeId);
+              
+              return (
+                <TableRow
+                  key={task.id}
+                  className="cursor-pointer hover:bg-gray-50"
+                  onClick={() => onTaskClick(task.id)}
+                >
+                  <TableCell>
+                    <div className="max-w-md">
+                      <p className={`truncate ${task.status === 'done' ? 'line-through text-gray-500' : ''}`}>
+                        {task.title}
+                      </p>
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant="outline" className={statusColors[task.status] || 'bg-purple-100 text-purple-700'}>
+                      {statusLabels[task.status] || (task.status.startsWith('custom_') ? 'Загрузка...' : task.status)}
+                    </Badge>
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant="outline" className={priorityColors[task.priority]}>
+                      {task.priority === 'urgent' && (
+                        <Flame className="w-3 h-3 mr-1 fill-current" />
+                      )}
+                      {priorityLabels[task.priority]}
+                    </Badge>
+                  </TableCell>
+                  <TableCell>
+                    {task.deadline ? (
+                      <span className={`text-sm ${overdue ? 'text-red-600 font-medium' : 'text-gray-600'}`}>
+                        {format(new Date(task.deadline), 'dd MMM yyyy', { locale: ru })}
+                      </span>
+                    ) : (
+                      <span className="text-sm text-gray-400">—</span>
                     )}
-                    <span className="text-sm">
-                      {task.priority === 'high' ? 'Высокий' : task.priority === 'medium' ? 'Средний' : 'Низкий'}
-                    </span>
-                  </div>
-                </TableCell>
-                <TableCell>
-                  <span className={`text-sm ${overdue ? 'text-red-600 font-medium' : 'text-gray-600'}`}>
-                    {task.dueDate}
-                  </span>
-                </TableCell>
-                <TableCell>
-                  <div className="flex gap-1 flex-wrap max-w-xs">
-                    {task.tags.slice(0, 3).map((tag) => (
-                      <Badge key={tag} variant="secondary" className="text-xs">
-                        {tag}
-                      </Badge>
-                    ))}
-                    {task.tags.length > 3 && (
-                      <Badge variant="secondary" className="text-xs">
-                        +{task.tags.length - 3}
-                      </Badge>
+                  </TableCell>
+                  <TableCell>
+                    {assignee && (
+                      <div className="flex items-center gap-2">
+                        <Avatar className="w-6 h-6">
+                          {assignee.avatarUrl && (
+                            <AvatarImage src={assignee.avatarUrl} alt={assignee.name} />
+                          )}
+                          <AvatarFallback className="text-xs bg-purple-100 text-purple-700">
+                            {getInitials(assignee.name)}
+                          </AvatarFallback>
+                        </Avatar>
+                        <span className="text-sm text-gray-700">{assignee.name}</span>
+                      </div>
                     )}
-                  </div>
-                </TableCell>
-                <TableCell>
-                  <span className="text-sm text-gray-500">{task.updatedAt}</span>
-                </TableCell>
-                <TableCell onClick={(e) => e.stopPropagation()}>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon" className="h-8 w-8">
-                        <MoreHorizontal className="w-4 h-4" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuItem onClick={() => onTaskClick(task.id)}>
-                        Открыть
-                      </DropdownMenuItem>
-                      <DropdownMenuItem>Редактировать</DropdownMenuItem>
-                      <DropdownMenuItem className="text-red-600">Удалить</DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </TableCell>
-              </TableRow>
-            );
-          })}
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex gap-1 flex-wrap max-w-xs">
+                      {task.tags && task.tags.slice(0, 3).map((tag, idx) => (
+                        <Badge key={idx} variant="secondary" className="text-xs">
+                          {tag}
+                        </Badge>
+                      ))}
+                      {task.tags && task.tags.length > 3 && (
+                        <Badge variant="secondary" className="text-xs">
+                          +{task.tags.length - 3}
+                        </Badge>
+                      )}
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    {task.updatedAt ? (
+                      <span className="text-sm text-gray-500">
+                        {format(new Date(task.updatedAt), 'dd MMM HH:mm', { locale: ru })}
+                      </span>
+                    ) : (
+                      <span className="text-sm text-gray-400">—</span>
+                    )}
+                  </TableCell>
+                </TableRow>
+              );
+            })
+          )}
         </TableBody>
       </Table>
     </div>

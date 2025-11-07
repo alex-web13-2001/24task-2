@@ -1,34 +1,37 @@
-import mongoose from 'mongoose';
+const { Sequelize } = require('sequelize');
+require('dotenv').config();
 
-const connectDatabase = async () => {
+const sequelize = new Sequelize({
+  host: process.env.DB_HOST || 'localhost',
+  port: process.env.DB_PORT || 5432,
+  database: process.env.DB_NAME || 'taskmanager',
+  username: process.env.DB_USER || 'postgres',
+  password: process.env.DB_PASSWORD || 'postgres',
+  dialect: 'postgres',
+  logging: process.env.NODE_ENV === 'development' ? console.log : false,
+  pool: {
+    max: 5,
+    min: 0,
+    acquire: 30000,
+    idle: 10000
+  },
+  define: {
+    timestamps: true,
+    underscored: true,
+    createdAt: 'created_at',
+    updatedAt: 'updated_at'
+  }
+});
+
+// Test connection
+const testConnection = async () => {
   try {
-    const conn = await mongoose.connect(process.env.MONGODB_URI, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-    });
-
-    console.log(`MongoDB Connected: ${conn.connection.host}`);
-
-    // Обработка ошибок подключения
-    mongoose.connection.on('error', (err) => {
-      console.error(`MongoDB connection error: ${err}`);
-    });
-
-    mongoose.connection.on('disconnected', () => {
-      console.log('MongoDB disconnected');
-    });
-
-    // Graceful shutdown
-    process.on('SIGINT', async () => {
-      await mongoose.connection.close();
-      console.log('MongoDB connection closed through app termination');
-      process.exit(0);
-    });
-
+    await sequelize.authenticate();
+    console.log('✅ Database connection established successfully.');
   } catch (error) {
-    console.error(`Error connecting to MongoDB: ${error.message}`);
+    console.error('❌ Unable to connect to the database:', error);
     process.exit(1);
   }
 };
 
-export default connectDatabase;
+module.exports = { sequelize, testConnection };

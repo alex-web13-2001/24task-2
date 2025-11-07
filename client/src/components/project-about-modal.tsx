@@ -18,7 +18,15 @@ import {
   AlertCircle,
   Download,
   Edit,
+  Calendar,
+  User,
+  RefreshCw,
 } from 'lucide-react';
+import { useApp } from '../contexts/app-context';
+import { format } from 'date-fns';
+import { ru } from 'date-fns/locale';
+import { diagnosticsAPI } from '../utils/supabase/client';
+import { toast } from 'sonner@2.0.3';
 
 type ProjectAboutModalProps = {
   open: boolean;
@@ -29,36 +37,20 @@ type ProjectAboutModalProps = {
   currentUserRole?: 'owner' | 'collaborator' | 'member' | 'viewer';
 };
 
-// Mock project data
-const getProjectData = (id: string) => ({
-  id,
-  name: 'Веб-сайт компании',
-  color: 'bg-purple-500',
-  description:
-    'Разработка современного корпоративного веб-сайта с адаптивным дизайном и интеграцией с CRM системой. Проект включает создание дизайн-системы, разработку frontend и backend частей, а также настройку CI/CD процессов.',
-  links: [
-    { id: '1', name: 'Figma дизайн', url: 'https://figma.com/design' },
-    { id: '2', name: 'GitHub репозиторий', url: 'https://github.com/project' },
-    { id: '3', name: 'Документация', url: 'https://docs.project.com' },
-  ],
-  categories: ['Разработка', 'Дизайн', 'Тестирование'],
-  attachments: [
-    { id: '1', name: 'requirements.pdf', size: '2.4 MB', url: '#' },
-    { id: '2', name: 'design-system.fig', size: '5.8 MB', url: '#' },
-    { id: '3', name: 'technical-spec.docx', size: '1.2 MB', url: '#' },
-  ],
-  members: [
-    { id: '1', name: 'Мария Иванова', short: 'МИ', role: 'Владелец' },
-    { id: '2', name: 'Александр Петров', short: 'АП', role: 'Участник' },
-    { id: '3', name: 'Евгений Смирнов', short: 'ЕС', role: 'Участник' },
-    { id: '4', name: 'Дмитрий Козлов', short: 'ДК', role: 'Наблюдатель' },
-  ],
-  stats: {
-    totalTasks: 24,
-    overdueTasks: 2,
-    activeMembers: 3,
-  },
-});
+// Helper to map color string to Tailwind class
+const getColorClass = (color?: string) => {
+  const colorMap: Record<string, string> = {
+    purple: 'bg-purple-500',
+    green: 'bg-green-500',
+    pink: 'bg-pink-500',
+    orange: 'bg-orange-500',
+    blue: 'bg-blue-500',
+    red: 'bg-red-500',
+    yellow: 'bg-yellow-500',
+    indigo: 'bg-indigo-500',
+  };
+  return colorMap[color || ''] || 'bg-gray-500';
+};
 
 export function ProjectAboutModal({
   open,
@@ -68,8 +60,47 @@ export function ProjectAboutModal({
   onManageMembers,
   currentUserRole = 'owner',
 }: ProjectAboutModalProps) {
-  const project = getProjectData(projectId);
-  const isOwner = currentUserRole === 'owner';
+  const { 
+    projects, 
+    tasks, 
+    currentUser, 
+    fetchTasks,
+    canEditProject,
+  } = useApp();
+  const [isMigrating, setIsMigrating] = React.useState(false);
+  const [diagnostics, setDiagnostics] = React.useState<any>(null);
+  
+  const project = React.useMemo(() => 
+    projects.find(p => p.id === projectId),
+    [projects, projectId]
+  );
+
+  const projectTasks = React.useMemo(() => 
+    tasks.filter(task => task.projectId === projectId),
+    [tasks, projectId]
+  );
+
+  const stats = React.useMemo(() => {
+    const totalTasks = projectTasks.length;
+    const overdueTasks = projectTasks.filter(
+      task => task.deadline && new Date(task.deadline) < new Date() && !task.completed
+    ).length;
+    const completedTasks = projectTasks.filter(task => task.completed).length;
+    const activeMembers = project?.members?.length || 1;
+
+    return { totalTasks, overdueTasks, completedTasks, activeMembers };
+  }, [projectTasks, project]);
+
+  if (!project) {
+    return null;
+  }
+
+  const isOwner = currentUserRole === 'owner' || project.userId === currentUser?.id;
+  const canEdit = canEditProject(projectId);
+  const categories = project.category ? project.category.split(', ').filter(Boolean) : [];
+  const links = project.links || [];
+  const attachments = project.attachments || [];
+  const members = project.members || [];
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -78,7 +109,7 @@ export function ProjectAboutModal({
           <div className="flex items-start justify-between gap-4">
             <div className="flex-1">
               <div className="flex items-center gap-2 mb-2">
-                <div className={`w-4 h-4 rounded-full ${project.color}`} />
+                <div className={`w-4 h-4 rounded-full ${getColorClass(project.color)}`} />
                 <DialogTitle className="text-2xl">{project.name}</DialogTitle>
               </div>
               <DialogDescription>Подробная информация о проекте</DialogDescription>
@@ -87,124 +118,161 @@ export function ProjectAboutModal({
         </DialogHeader>
 
         <div className="space-y-6 mt-4">
-          {/* Описание */}
-          <div>
-            <h4 className="mb-2">Описание проекта</h4>
-            <p className="text-sm text-gray-600 leading-relaxed">{project.description}</p>
+          {/* Основная информация */}
+          <div className="grid grid-cols-2 gap-4 p-4 bg-gray-50 rounded-lg">
+            <div className="flex items-center gap-2 text-sm">
+              <Calendar className="w-4 h-4 text-gray-500" />
+              <div>
+                <p className="text-xs text-gray-500">Создан</p>
+                <p>{format(new Date(project.createdAt), 'PPP', { locale: ru })}</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 text-sm">
+              <User className="w-4 h-4 text-gray-500" />
+              <div>
+                <p className="text-xs text-gray-500">Владелец</p>
+                <p>{currentUser?.name || 'Вы'}</p>
+              </div>
+            </div>
           </div>
 
           <Separator />
+
+          {/* Описание */}
+          {project.description && (
+            <>
+              <div>
+                <h4 className="mb-2">Описание проекта</h4>
+                <p className="text-sm text-gray-600 leading-relaxed">{project.description}</p>
+              </div>
+              <Separator />
+            </>
+          )}
 
           {/* Внешние ссылки */}
-          {project.links.length > 0 && (
-            <div>
-              <div className="flex items-center gap-2 mb-3">
-                <LinkIcon className="w-4 h-4" />
-                <h4>Внешние ссылки ({project.links.length})</h4>
-              </div>
-              <div className="space-y-2">
-                {project.links.map((link) => (
-                  <a
-                    key={link.id}
-                    href={link.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
-                  >
-                    <div className="flex items-center gap-3">
-                      <LinkIcon className="w-4 h-4 text-gray-500" />
-                      <div>
-                        <p className="text-sm">{link.name}</p>
-                        <p className="text-xs text-gray-500 truncate max-w-xs">{link.url}</p>
+          {links.length > 0 && (
+            <>
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <LinkIcon className="w-4 h-4" />
+                  <h4>Внешние ссылки ({links.length})</h4>
+                </div>
+                <div className="space-y-2">
+                  {links.map((link) => (
+                    <a
+                      key={link.id}
+                      href={link.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors group"
+                    >
+                      <div className="flex items-center gap-3 flex-1 min-w-0">
+                        <LinkIcon className="w-4 h-4 text-gray-500 flex-shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm truncate">{link.name}</p>
+                          <p className="text-xs text-gray-500 truncate">{link.url}</p>
+                        </div>
                       </div>
-                    </div>
-                    <LinkIcon className="w-4 h-4 text-purple-600" />
-                  </a>
-                ))}
+                      <LinkIcon className="w-4 h-4 text-purple-600 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
+                    </a>
+                  ))}
+                </div>
               </div>
-            </div>
+              <Separator />
+            </>
           )}
-
-          <Separator />
 
           {/* Категории */}
-          {project.categories.length > 0 && (
-            <div>
-              <h4 className="mb-3">Категории</h4>
-              <div className="flex flex-wrap gap-2">
-                {project.categories.map((category) => (
-                  <Badge key={category} variant="secondary" className="text-sm">
-                    {category}
-                  </Badge>
-                ))}
+          {categories.length > 0 && (
+            <>
+              <div>
+                <h4 className="mb-3">Категории</h4>
+                <div className="flex flex-wrap gap-2">
+                  {categories.map((category) => (
+                    <Badge key={category} variant="secondary" className="text-sm">
+                      {category}
+                    </Badge>
+                  ))}
+                </div>
               </div>
-            </div>
+              <Separator />
+            </>
           )}
-
-          <Separator />
 
           {/* Файлы */}
-          {project.attachments.length > 0 && (
-            <div>
-              <div className="flex items-center gap-2 mb-3">
-                <Paperclip className="w-4 h-4" />
-                <h4>Файлы проекта ({project.attachments.length})</h4>
-              </div>
-              <div className="space-y-2">
-                {project.attachments.map((attachment) => (
-                  <div
-                    key={attachment.id}
-                    className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 cursor-pointer"
-                  >
-                    <div className="flex items-center gap-3">
-                      <Paperclip className="w-4 h-4 text-gray-500" />
-                      <div>
-                        <p className="text-sm">{attachment.name}</p>
-                        <p className="text-xs text-gray-500">{attachment.size}</p>
+          {attachments.length > 0 && (
+            <>
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <Paperclip className="w-4 h-4" />
+                  <h4>Файлы проекта ({attachments.length})</h4>
+                </div>
+                <div className="space-y-2">
+                  {attachments.map((attachment) => (
+                    <div
+                      key={attachment.id}
+                      className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors"
+                    >
+                      <div className="flex items-center gap-3 flex-1 min-w-0">
+                        <Paperclip className="w-4 h-4 text-gray-500 flex-shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm truncate">{attachment.name}</p>
+                          <p className="text-xs text-gray-500">{attachment.size}</p>
+                        </div>
                       </div>
+                      <Button 
+                        variant="ghost" 
+                        size="sm"
+                        onClick={() => {
+                          if (attachment.url) {
+                            window.open(attachment.url, '_blank');
+                          }
+                        }}
+                      >
+                        <Download className="w-4 h-4 mr-2" />
+                        Скачать
+                      </Button>
                     </div>
-                    <Button variant="ghost" size="sm">
-                      <Download className="w-4 h-4 mr-2" />
-                      Скачать
-                    </Button>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
-            </div>
+              <Separator />
+            </>
           )}
 
-          <Separator />
-
           {/* Участники */}
-          <div>
-            <div className="flex items-center gap-2 mb-3">
-              <Users className="w-4 h-4" />
-              <h4>Участники проекта ({project.members.length})</h4>
-            </div>
-            <div className="space-y-2">
-              {project.members.map((member) => (
-                <div
-                  key={member.id}
-                  className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
-                >
-                  <div className="flex items-center gap-3">
-                    <Avatar className="w-10 h-10">
-                      <AvatarFallback className="text-sm bg-purple-100 text-purple-600">
-                        {member.short}
-                      </AvatarFallback>
-                    </Avatar>
-                    <div>
-                      <p className="text-sm">{member.name}</p>
-                      <p className="text-xs text-gray-500">{member.role}</p>
-                    </div>
-                  </div>
-                  <Badge variant="outline">{member.role}</Badge>
+          {members.length > 0 && (
+            <>
+              <div>
+                <div className="flex items-center gap-2 mb-3">
+                  <Users className="w-4 h-4" />
+                  <h4>Участники проекта ({members.length})</h4>
                 </div>
-              ))}
-            </div>
-          </div>
-
-          <Separator />
+                <div className="space-y-2">
+                  {members.map((member) => (
+                    <div
+                      key={member.id}
+                      className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
+                    >
+                      <div className="flex items-center gap-3">
+                        <Avatar className="w-10 h-10">
+                          <AvatarFallback className="text-sm bg-purple-100 text-purple-600">
+                            {member.short || member.name?.substring(0, 2).toUpperCase()}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div>
+                          <p className="text-sm">{member.name}</p>
+                          <p className="text-xs text-gray-500">{member.role || 'Участник'}</p>
+                        </div>
+                      </div>
+                      <Badge variant="outline">{member.role || 'Участник'}</Badge>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <Separator />
+            </>
+          )}
 
           {/* Статистика */}
           <div>
@@ -214,7 +282,7 @@ export function ProjectAboutModal({
                 <div className="flex items-center justify-center mb-2">
                   <CheckCircle2 className="w-5 h-5 text-green-600" />
                 </div>
-                <p className="text-2xl mb-1">{project.stats.totalTasks}</p>
+                <p className="text-2xl mb-1">{stats.totalTasks}</p>
                 <p className="text-xs text-gray-600">Всего задач</p>
               </div>
 
@@ -222,7 +290,7 @@ export function ProjectAboutModal({
                 <div className="flex items-center justify-center mb-2">
                   <AlertCircle className="w-5 h-5 text-red-600" />
                 </div>
-                <p className="text-2xl mb-1">{project.stats.overdueTasks}</p>
+                <p className="text-2xl mb-1">{stats.overdueTasks}</p>
                 <p className="text-xs text-gray-600">Просроченных</p>
               </div>
 
@@ -230,13 +298,105 @@ export function ProjectAboutModal({
                 <div className="flex items-center justify-center mb-2">
                   <Users className="w-5 h-5 text-purple-600" />
                 </div>
-                <p className="text-2xl mb-1">{project.stats.activeMembers}</p>
-                <p className="text-xs text-gray-600">Активных</p>
+                <p className="text-2xl mb-1">{stats.completedTasks}</p>
+                <p className="text-xs text-gray-600">Завершено</p>
               </div>
             </div>
           </div>
 
+          {/* Пустое состояние для проектов без данных */}
+          {!project.description && links.length === 0 && categories.length === 0 && attachments.length === 0 && (
+            <div className="text-center py-8 bg-gray-50 rounded-lg">
+              <p className="text-gray-500 mb-2">Информация о проекте не заполнена</p>
+              {canEdit && onEdit && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    onEdit();
+                    onOpenChange(false);
+                  }}
+                >
+                  <Edit className="w-4 h-4 mr-2" />
+                  Добавить информацию
+                </Button>
+              )}
+            </div>
+          )}
+
           <Separator />
+
+          {/* Диагностика и миграция задач (только для владельца) */}
+          {isOwner && (
+            <>
+              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                <h4 className="mb-2 flex items-center gap-2">
+                  <RefreshCw className="w-4 h-4 text-yellow-700" />
+                  <span className="text-yellow-700">Миграция задач</span>
+                </h4>
+                <p className="text-sm text-gray-600 mb-3">
+                  Если приглашенные участники не видят задачи проекта, нужно выполнить миграцию.
+                </p>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={async () => {
+                      try {
+                        const result = await diagnosticsAPI.diagnoseProjectTasks(projectId);
+                        setDiagnostics(result);
+                        console.log('Diagnostics:', result);
+                        if (result.needsMigration) {
+                          toast.info(`Найдено ${result.oldFormatTasksCount} задач требующих миграции`);
+                        } else {
+                          toast.success('Все задачи в правильном формате');
+                        }
+                      } catch (error: any) {
+                        console.error('Diagnostics error:', error);
+                        toast.error(error.message || 'Ошибка диагностики');
+                      }
+                    }}
+                  >
+                    Проверить задачи
+                  </Button>
+                  {diagnostics?.needsMigration && (
+                    <Button
+                      variant="default"
+                      size="sm"
+                      className="bg-yellow-600 hover:bg-yellow-700"
+                      onClick={async () => {
+                        try {
+                          setIsMigrating(true);
+                          const result = await diagnosticsAPI.migrateProjectTasks(projectId);
+                          console.log('Migration result:', result);
+                          toast.success(`Перенесено ${result.migratedCount} задач`);
+                          await fetchTasks();
+                          setDiagnostics(null);
+                        } catch (error: any) {
+                          console.error('Migration error:', error);
+                          toast.error(error.message || 'Ошибка миграции');
+                        } finally {
+                          setIsMigrating(false);
+                        }
+                      }}
+                      disabled={isMigrating}
+                    >
+                      {isMigrating ? 'Миграция...' : `Мигрировать ${diagnostics.oldFormatTasksCount} задач`}
+                    </Button>
+                  )}
+                </div>
+                {diagnostics && (
+                  <div className="mt-3 text-xs text-gray-600 space-y-1">
+                    <p>✅ Задач в новом формате: {diagnostics.projectTasksCount}</p>
+                    {diagnostics.needsMigration && (
+                      <p>⚠️ Задач в старом формате: {diagnostics.oldFormatTasksCount}</p>
+                    )}
+                  </div>
+                )}
+              </div>
+              <Separator />
+            </>
+          )}
 
           {/* Кнопки действий */}
           <div className="flex gap-3">
@@ -256,16 +416,16 @@ export function ProjectAboutModal({
                 Управление участниками
               </Button>
             )}
-            {isOwner && (
+            {canEdit && onEdit && (
               <Button
                 onClick={() => {
-                  onEdit?.();
+                  onEdit();
                   onOpenChange(false);
                 }}
                 className="flex-1 bg-purple-600 hover:bg-purple-700"
               >
                 <Edit className="w-4 h-4 mr-2" />
-                Редактировать
+                Редактировать проект
               </Button>
             )}
           </div>

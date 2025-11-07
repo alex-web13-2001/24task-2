@@ -145,6 +145,7 @@ export function CreateTaskDialog({
                   <SelectValue placeholder="Выберите категорию" />
                 </SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="none">Без категории</SelectItem>
                   <SelectItem value="development">Разработка</SelectItem>
                   <SelectItem value="design">Дизайн</SelectItem>
                   <SelectItem value="testing">Тестирование</SelectItem>

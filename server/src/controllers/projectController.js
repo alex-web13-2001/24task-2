@@ -1,544 +1,468 @@
-import Project from '../models/Project.js';
-import Task from '../models/Task.js';
-import Invitation from '../models/Invitation.js';
-import { sendProjectInvitation } from '../utils/email.js';
+const { Project, ProjectMember, User, Task } = require('../models');
+const { Op } = require('sequelize');
 
-/**
- * Получение всех проектов пользователя
- */
-export const getProjects = async (req, res, next) => {
+// Get all projects
+exports.getAllProjects = async (req, res, next) => {
   try {
-    const { status, type } = req.query;
-    const userId = req.user._id;
+    const userId = req.user.id;
 
-    let query = {
-      $or: [
-        { ownerId: userId },
-        { 'members.userId': userId }
-      ]
-    };
-
-    // Фильтр по статусу
-    if (status) {
-      query.status = status;
-    }
-
-    // Фильтр по типу (свои/приглашенные)
-    if (type === 'own') {
-      query = { ownerId: userId, ...query };
-    } else if (type === 'invited') {
-      query = { 
-        'members.userId': userId,
-        ownerId: { $ne: userId }
-      };
-    }
-
-    const projects = await Project.find(query)
-      .populate('ownerId', 'name email avatar')
-      .populate('members.userId', 'name email avatar')
-      .populate('categories', 'title color')
-      .sort({ updatedAt: -1 });
-
-    // Добавление статистики задач для каждого проекта
-    const projectsWithStats = await Promise.all(
-      projects.map(async (project) => {
-        const totalTasks = await Task.countDocuments({ projectId: project._id, archived: false });
-        const overdueTasks = await Task.countDocuments({
-          projectId: project._id,
-          archived: false,
-          deadline: { $lt: new Date() },
-          status: { $ne: 'Done' }
-        });
-
-        return {
-          ...project.toObject(),
-          stats: {
-            totalTasks,
-            overdueTasks
+    // Get all projects where user is a member
+    const projectMembers = await ProjectMember.findAll({
+      where: { user_id: userId },
+      include: [{
+        model: Project,
+        as: 'project',
+        where: { archived: false },
+        include: [
+          {
+            model: User,
+            as: 'owner',
+            attributes: ['id', 'name', 'email', 'avatar_url']
           },
-          userRole: project.getUserRole(userId)
-        };
-      })
-    );
+          {
+            model: ProjectMember,
+            as: 'projectMembers',
+            include: [{
+              model: User,
+              as: 'user',
+              attributes: ['id', 'name', 'email', 'avatar_url']
+            }]
+          }
+        ]
+      }]
+    });
+
+    // Transform data
+    const projects = await Promise.all(projectMembers.map(async (pm) => {
+      const project = pm.project;
+      
+      // Get task count
+      const taskCount = await Task.count({
+        where: {
+          project_id: project.id,
+          archived: false
+        }
+      });
+
+      // Format members
+      const members = project.projectMembers.map(member => ({
+        user_id: member.user.id,
+        email: member.user.email,
+        name: member.user.name,
+        avatar_url: member.user.avatar_url,
+        role: member.role
+      }));
+
+      return {
+        id: project.id,
+        name: project.name,
+        description: project.description,
+        color: project.color,
+        owner_id: project.owner_id,
+        owner: project.owner,
+        members,
+        task_count: taskCount,
+        archived: project.archived,
+        created_at: project.created_at,
+        updated_at: project.updated_at
+      };
+    }));
 
     res.json({
       success: true,
-      data: projectsWithStats
+      projects
     });
   } catch (error) {
     next(error);
   }
 };
 
-/**
- * Получение проекта по ID
- */
-export const getProjectById = async (req, res, next) => {
+// Create project
+exports.createProject = async (req, res, next) => {
+  try {
+    const { name, description, color } = req.body;
+
+    if (!name) {
+      return res.status(400).json({
+        success: false,
+        error: 'Project name is required'
+      });
+    }
+
+    // Create project
+    const project = await Project.create({
+      name,
+      description: description || null,
+      color: color || 'purple',
+      owner_id: req.user.id
+    });
+
+    // Add creator as owner member
+    await ProjectMember.create({
+      project_id: project.id,
+      user_id: req.user.id,
+      role: 'owner'
+    });
+
+    // Fetch project with associations
+    const createdProject = await Project.findByPk(project.id, {
+      include: [
+        {
+          model: User,
+          as: 'owner',
+          attributes: ['id', 'name', 'email', 'avatar_url']
+        },
+        {
+          model: ProjectMember,
+          as: 'projectMembers',
+          include: [{
+            model: User,
+            as: 'user',
+            attributes: ['id', 'name', 'email', 'avatar_url']
+          }]
+        }
+      ]
+    });
+
+    res.status(201).json({
+      success: true,
+      project: createdProject
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Get project by ID
+exports.getProject = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const userId = req.user._id;
 
-    const project = await Project.findById(id)
-      .populate('ownerId', 'name email avatar')
-      .populate('members.userId', 'name email avatar')
-      .populate('categories', 'title color')
-      .populate('files');
+    const project = await Project.findByPk(id, {
+      include: [
+        {
+          model: User,
+          as: 'owner',
+          attributes: ['id', 'name', 'email', 'avatar_url']
+        },
+        {
+          model: ProjectMember,
+          as: 'projectMembers',
+          include: [{
+            model: User,
+            as: 'user',
+            attributes: ['id', 'name', 'email', 'avatar_url']
+          }]
+        }
+      ]
+    });
 
     if (!project) {
       return res.status(404).json({
         success: false,
-        message: 'Проект не найден'
+        error: 'Project not found'
       });
     }
 
-    // Проверка доступа
-    if (!project.hasAccess(userId)) {
+    // Check if user is a member
+    const isMember = project.projectMembers.some(
+      pm => pm.user_id === req.user.id
+    );
+
+    if (!isMember) {
       return res.status(403).json({
         success: false,
-        message: 'Нет доступа к этому проекту'
+        error: 'Access denied'
       });
     }
-
-    // Статистика задач
-    const totalTasks = await Task.countDocuments({ projectId: project._id, archived: false });
-    const overdueTasks = await Task.countDocuments({
-      projectId: project._id,
-      archived: false,
-      deadline: { $lt: new Date() },
-      status: { $ne: 'Done' }
-    });
 
     res.json({
       success: true,
-      data: {
-        ...project.toObject(),
-        stats: {
-          totalTasks,
-          overdueTasks
-        },
-        userRole: project.getUserRole(userId)
-      }
+      project
     });
   } catch (error) {
     next(error);
   }
 };
 
-/**
- * Создание нового проекта
- */
-export const createProject = async (req, res, next) => {
-  try {
-    const { title, description, color, links, categories } = req.body;
-    const userId = req.user._id;
-
-    const project = await Project.create({
-      title,
-      description,
-      color,
-      links,
-      categories,
-      ownerId: userId
-    });
-
-    await project.populate('ownerId', 'name email avatar');
-    await project.populate('categories', 'title color');
-
-    res.status(201).json({
-      success: true,
-      message: 'Проект успешно создан',
-      data: project
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-/**
- * Обновление проекта
- */
-export const updateProject = async (req, res, next) => {
+// Update project
+exports.updateProject = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const userId = req.user._id;
     const updates = req.body;
 
-    const project = await Project.findById(id);
+    const project = await Project.findByPk(id);
 
     if (!project) {
       return res.status(404).json({
         success: false,
-        message: 'Проект не найден'
+        error: 'Project not found'
       });
     }
 
-    // Проверка прав (Owner или Collaborator)
-    if (!project.hasAccess(userId, ['Owner', 'Collaborator'])) {
-      return res.status(403).json({
-        success: false,
-        message: 'Недостаточно прав для редактирования проекта'
-      });
-    }
-
-    // Обновление полей
-    const allowedUpdates = ['title', 'description', 'color', 'links', 'categories', 'tags'];
-    allowedUpdates.forEach(field => {
-      if (updates[field] !== undefined) {
-        project[field] = updates[field];
+    // Check if user is owner or collaborator
+    const member = await ProjectMember.findOne({
+      where: {
+        project_id: id,
+        user_id: req.user.id,
+        role: { [Op.in]: ['owner', 'collaborator'] }
       }
     });
 
-    await project.save();
-    await project.populate('ownerId', 'name email avatar');
-    await project.populate('members.userId', 'name email avatar');
-    await project.populate('categories', 'title color');
+    if (!member) {
+      return res.status(403).json({
+        success: false,
+        error: 'Only owner and collaborators can edit projects'
+      });
+    }
+
+    // Update project
+    await project.update(updates);
+
+    // Fetch updated project
+    const updatedProject = await Project.findByPk(id, {
+      include: [
+        {
+          model: User,
+          as: 'owner',
+          attributes: ['id', 'name', 'email', 'avatar_url']
+        },
+        {
+          model: ProjectMember,
+          as: 'projectMembers',
+          include: [{
+            model: User,
+            as: 'user',
+            attributes: ['id', 'name', 'email', 'avatar_url']
+          }]
+        }
+      ]
+    });
 
     res.json({
       success: true,
-      message: 'Проект успешно обновлен',
-      data: project
+      project: updatedProject
     });
   } catch (error) {
     next(error);
   }
 };
 
-/**
- * Архивирование проекта
- */
-export const archiveProject = async (req, res, next) => {
+// Delete project
+exports.deleteProject = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const userId = req.user._id;
 
-    const project = await Project.findById(id);
+    const project = await Project.findByPk(id);
 
     if (!project) {
       return res.status(404).json({
         success: false,
-        message: 'Проект не найден'
+        error: 'Project not found'
       });
     }
 
-    // Только владелец может архивировать
-    if (project.ownerId.toString() !== userId.toString()) {
+    // Only owner can delete
+    if (project.owner_id !== req.user.id) {
       return res.status(403).json({
         success: false,
-        message: 'Только владелец может архивировать проект'
+        error: 'Only the project owner can delete it'
       });
     }
 
-    project.status = 'archived';
-    await project.save();
-
-    // Архивирование всех задач проекта
-    await Task.updateMany(
-      { projectId: project._id },
-      { archived: true }
-    );
+    await project.destroy();
 
     res.json({
-      success: true,
-      message: 'Проект успешно архивирован',
-      data: project
+      success: true
     });
   } catch (error) {
     next(error);
   }
 };
 
-/**
- * Восстановление проекта из архива
- */
-export const restoreProject = async (req, res, next) => {
+// Add project member
+exports.addMember = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const userId = req.user._id;
+    const { user_id, role } = req.body;
 
-    const project = await Project.findById(id);
-
-    if (!project) {
-      return res.status(404).json({
-        success: false,
-        message: 'Проект не найден'
-      });
-    }
-
-    // Только владелец может восстанавливать
-    if (project.ownerId.toString() !== userId.toString()) {
-      return res.status(403).json({
-        success: false,
-        message: 'Только владелец может восстановить проект'
-      });
-    }
-
-    project.status = 'active';
-    await project.save();
-
-    // Восстановление задач проекта
-    await Task.updateMany(
-      { projectId: project._id },
-      { archived: false }
-    );
-
-    res.json({
-      success: true,
-      message: 'Проект успешно восстановлен',
-      data: project
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-/**
- * Удаление проекта
- */
-export const deleteProject = async (req, res, next) => {
-  try {
-    const { id } = req.params;
-    const userId = req.user._id;
-
-    const project = await Project.findById(id);
-
-    if (!project) {
-      return res.status(404).json({
-        success: false,
-        message: 'Проект не найден'
-      });
-    }
-
-    // Только владелец может удалять
-    if (project.ownerId.toString() !== userId.toString()) {
-      return res.status(403).json({
-        success: false,
-        message: 'Только владелец может удалить проект'
-      });
-    }
-
-    // Удаление всех задач проекта
-    await Task.deleteMany({ projectId: project._id });
-
-    // Удаление всех приглашений
-    await Invitation.deleteMany({ projectId: project._id });
-
-    // Удаление проекта
-    await project.deleteOne();
-
-    res.json({
-      success: true,
-      message: 'Проект успешно удален'
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-/**
- * Управление колонками проекта
- */
-export const updateColumns = async (req, res, next) => {
-  try {
-    const { id } = req.params;
-    const { columns } = req.body;
-    const userId = req.user._id;
-
-    const project = await Project.findById(id);
-
-    if (!project) {
-      return res.status(404).json({
-        success: false,
-        message: 'Проект не найден'
-      });
-    }
-
-    // Проверка прав (Owner или Collaborator)
-    if (!project.hasAccess(userId, ['Owner', 'Collaborator'])) {
-      return res.status(403).json({
-        success: false,
-        message: 'Недостаточно прав для изменения колонок'
-      });
-    }
-
-    project.columns = columns;
-    await project.save();
-
-    res.json({
-      success: true,
-      message: 'Колонки успешно обновлены',
-      data: project.columns
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-/**
- * Приглашение пользователя в проект
- */
-export const inviteUser = async (req, res, next) => {
-  try {
-    const { id } = req.params;
-    const { email, role } = req.body;
-    const userId = req.user._id;
-
-    const project = await Project.findById(id).populate('ownerId', 'name');
-
-    if (!project) {
-      return res.status(404).json({
-        success: false,
-        message: 'Проект не найден'
-      });
-    }
-
-    // Только владелец может приглашать
-    if (project.ownerId._id.toString() !== userId.toString()) {
-      return res.status(403).json({
-        success: false,
-        message: 'Только владелец может приглашать пользователей'
-      });
-    }
-
-    // Проверка, не приглашен ли уже пользователь
-    const existingInvitation = await Invitation.findOne({
-      email,
-      projectId: project._id,
-      status: 'pending'
-    });
-
-    if (existingInvitation) {
+    if (!user_id || !role) {
       return res.status(400).json({
         success: false,
-        message: 'Приглашение для этого email уже отправлено'
+        error: 'user_id and role are required'
       });
     }
 
-    // Создание приглашения
-    const invitation = await Invitation.create({
-      email,
-      projectId: project._id,
-      role,
-      invitedBy: userId
+    const project = await Project.findByPk(id);
+
+    if (!project) {
+      return res.status(404).json({
+        success: false,
+        error: 'Project not found'
+      });
+    }
+
+    // Only owner can add members
+    if (project.owner_id !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        error: 'Only the project owner can add members'
+      });
+    }
+
+    // Check if user exists
+    const user = await User.findByPk(user_id);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: 'User not found'
+      });
+    }
+
+    // Check if already a member
+    const existingMember = await ProjectMember.findOne({
+      where: {
+        project_id: id,
+        user_id
+      }
     });
 
-    // Отправка email
-    try {
-      await sendProjectInvitation(email, project.title, project.ownerId.name, invitation.token, role);
-    } catch (emailError) {
-      console.error('Email sending error:', emailError);
+    if (existingMember) {
+      return res.status(400).json({
+        success: false,
+        error: 'User is already a member'
+      });
     }
+
+    // Add member
+    await ProjectMember.create({
+      project_id: id,
+      user_id,
+      role
+    });
 
     res.status(201).json({
-      success: true,
-      message: 'Приглашение успешно отправлено',
-      data: invitation
+      success: true
     });
   } catch (error) {
     next(error);
   }
 };
 
-/**
- * Удаление участника из проекта
- */
-export const removeMember = async (req, res, next) => {
+// Remove project member
+exports.removeMember = async (req, res, next) => {
   try {
-    const { id, memberId } = req.params;
-    const userId = req.user._id;
+    const { id, userId } = req.params;
 
-    const project = await Project.findById(id);
+    const project = await Project.findByPk(id);
 
     if (!project) {
       return res.status(404).json({
         success: false,
-        message: 'Проект не найден'
+        error: 'Project not found'
       });
     }
 
-    // Только владелец может удалять участников
-    if (project.ownerId.toString() !== userId.toString()) {
+    // Only owner can remove members
+    if (project.owner_id !== req.user.id) {
       return res.status(403).json({
         success: false,
-        message: 'Только владелец может удалять участников'
+        error: 'Only the project owner can remove members'
       });
     }
 
-    // Нельзя удалить владельца
-    if (memberId === userId.toString()) {
+    // Cannot remove owner
+    if (userId === project.owner_id) {
       return res.status(400).json({
         success: false,
-        message: 'Владелец не может удалить себя из проекта'
+        error: 'Cannot remove project owner'
       });
     }
 
-    // Удаление участника
-    project.members = project.members.filter(
-      m => m.userId.toString() !== memberId
-    );
-
-    await project.save();
-
-    res.json({
-      success: true,
-      message: 'Участник успешно удален из проекта'
+    const member = await ProjectMember.findOne({
+      where: {
+        project_id: id,
+        user_id: userId
+      }
     });
-  } catch (error) {
-    next(error);
-  }
-};
 
-/**
- * Изменение роли участника
- */
-export const updateMemberRole = async (req, res, next) => {
-  try {
-    const { id, memberId } = req.params;
-    const { role } = req.body;
-    const userId = req.user._id;
-
-    const project = await Project.findById(id);
-
-    if (!project) {
-      return res.status(404).json({
-        success: false,
-        message: 'Проект не найден'
-      });
-    }
-
-    // Только владелец может изменять роли
-    if (project.ownerId.toString() !== userId.toString()) {
-      return res.status(403).json({
-        success: false,
-        message: 'Только владелец может изменять роли участников'
-      });
-    }
-
-    // Нельзя изменить роль владельца
-    if (memberId === userId.toString()) {
-      return res.status(400).json({
-        success: false,
-        message: 'Нельзя изменить роль владельца'
-      });
-    }
-
-    // Обновление роли
-    const member = project.members.find(m => m.userId.toString() === memberId);
     if (!member) {
       return res.status(404).json({
         success: false,
-        message: 'Участник не найден'
+        error: 'Member not found'
       });
     }
 
-    member.role = role;
-    await project.save();
+    await member.destroy();
 
     res.json({
-      success: true,
-      message: 'Роль участника успешно обновлена',
-      data: member
+      success: true
     });
   } catch (error) {
     next(error);
   }
 };
+
+// Update member role
+exports.updateMemberRole = async (req, res, next) => {
+  try {
+    const { id, userId } = req.params;
+    const { role } = req.body;
+
+    if (!role) {
+      return res.status(400).json({
+        success: false,
+        error: 'Role is required'
+      });
+    }
+
+    const project = await Project.findByPk(id);
+
+    if (!project) {
+      return res.status(404).json({
+        success: false,
+        error: 'Project not found'
+      });
+    }
+
+    // Only owner can update roles
+    if (project.owner_id !== req.user.id) {
+      return res.status(403).json({
+        success: false,
+        error: 'Only the project owner can update member roles'
+      });
+    }
+
+    // Cannot change owner role
+    if (userId === project.owner_id) {
+      return res.status(400).json({
+        success: false,
+        error: 'Cannot change owner role'
+      });
+    }
+
+    const member = await ProjectMember.findOne({
+      where: {
+        project_id: id,
+        user_id: userId
+      }
+    });
+
+    if (!member) {
+      return res.status(404).json({
+        success: false,
+        error: 'Member not found'
+      });
+    }
+
+    await member.update({ role });
+
+    res.json({
+      success: true
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+module.exports = exports;

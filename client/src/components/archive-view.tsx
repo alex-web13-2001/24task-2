@@ -78,7 +78,7 @@ export function ArchiveView() {
 
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden">
-      <div className="border-b bg-white px-6 py-4">
+      <div className="border-b bg-white px-6 py-4 flex-shrink-0">
         <div className="flex items-center justify-between mb-4">
           <div>
             <h1 className="text-gray-900 mb-1">Архив</h1>

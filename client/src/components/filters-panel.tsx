@@ -1,5 +1,5 @@
 import React from 'react';
-import { Filter, X } from 'lucide-react';
+import { Filter, X, User } from 'lucide-react';
 import { Button } from './ui/button';
 import {
   Sheet,
@@ -15,6 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Input } from './ui/input';
 import { Badge } from './ui/badge';
 import { Separator } from './ui/separator';
+import { useApp } from '../contexts/app-context';
 
 export type Filters = {
   projects: string[];
@@ -23,8 +24,9 @@ export type Filters = {
   priorities: string[];
   assignees: string[];
   tags: string[];
-  deadlineFrom: string;
-  deadlineTo: string;
+  deadline: 'all' | 'overdue' | 'today' | '3days' | 'week';
+  deadlineFrom?: string;
+  deadlineTo?: string;
 };
 
 type FiltersPanelProps = {
@@ -33,44 +35,32 @@ type FiltersPanelProps = {
   onClearFilters: () => void;
 };
 
-const projectsList = [
-  { id: 'website', name: 'Веб-сайт', color: 'bg-purple-500' },
-  { id: 'backend', name: 'Backend', color: 'bg-green-500' },
-  { id: 'mobile', name: 'Мобильное приложение', color: 'bg-pink-500' },
-  { id: 'devops', name: 'DevOps', color: 'bg-orange-500' },
-  { id: 'design', name: 'Дизайн система', color: 'bg-blue-500' },
-];
-
 const categoriesList = [
+  { id: 'none', name: 'Без категории', color: 'bg-gray-400' },
   { id: 'development', name: 'Разработка', color: 'bg-purple-500' },
   { id: 'design', name: 'Дизайн', color: 'bg-pink-500' },
   { id: 'testing', name: 'Тестирование', color: 'bg-green-500' },
   { id: 'documentation', name: 'Документация', color: 'bg-blue-500' },
   { id: 'bugs', name: 'Баги', color: 'bg-red-500' },
+  { id: 'features', name: 'Новые функции', color: 'bg-orange-500' },
 ];
 
 const statusesList = [
-  { id: 'assigned', name: 'Assigned' },
-  { id: 'in-progress', name: 'In Progress' },
-  { id: 'review', name: 'Review' },
-  { id: 'done', name: 'Done' },
+  { id: 'todo', name: 'К выполнению' },
+  { id: 'in_progress', name: 'В работе' },
+  { id: 'review', name: 'На проверке' },
+  { id: 'done', name: 'Готово' },
 ];
 
 const prioritiesList = [
   { id: 'low', name: 'Низкий' },
   { id: 'medium', name: 'Средний' },
   { id: 'high', name: 'Высокий' },
-  { id: 'urgent', name: 'Срочный🔥' },
-];
-
-const assigneesList = [
-  { id: 'ap', name: 'Александр Петров' },
-  { id: 'mi', name: 'Мария Иванова' },
-  { id: 'es', name: 'Евгений Смирнов' },
-  { id: 'dk', name: 'Дмитрий Козлов' },
+  { id: 'urgent', name: 'Срочный' },
 ];
 
 export function FiltersPanel({ filters, onFiltersChange, onClearFilters }: FiltersPanelProps) {
+  const { projects, teamMembers } = useApp();
   const [newTag, setNewTag] = React.useState('');
 
   const toggleArrayFilter = (key: keyof Filters, value: string) => {
@@ -99,8 +89,21 @@ export function FiltersPanel({ filters, onFiltersChange, onClearFilters }: Filte
     filters.priorities.length > 0 ||
     filters.assignees.length > 0 ||
     filters.tags.length > 0 ||
-    filters.deadlineFrom ||
-    filters.deadlineTo;
+    filters.deadline !== 'all';
+
+  const getColorClass = (color?: string) => {
+    const colorMap: Record<string, string> = {
+      purple: 'bg-purple-500',
+      green: 'bg-green-500',
+      pink: 'bg-pink-500',
+      orange: 'bg-orange-500',
+      blue: 'bg-blue-500',
+      red: 'bg-red-500',
+      yellow: 'bg-yellow-500',
+      indigo: 'bg-indigo-500',
+    };
+    return colorMap[color || ''] || 'bg-gray-500';
+  };
 
   return (
     <Sheet>
@@ -136,22 +139,41 @@ export function FiltersPanel({ filters, onFiltersChange, onClearFilters }: Filte
               )}
             </div>
             <div className="space-y-2">
-              {projectsList.map((project) => (
-                <div key={project.id} className="flex items-center space-x-2">
-                  <Checkbox
-                    id={`project-${project.id}`}
-                    checked={filters.projects.includes(project.id)}
-                    onCheckedChange={() => toggleArrayFilter('projects', project.id)}
-                  />
-                  <label
-                    htmlFor={`project-${project.id}`}
-                    className="text-sm flex items-center gap-2 cursor-pointer flex-1"
-                  >
-                    <div className={`w-3 h-3 ${project.color} rounded-sm`} />
-                    {project.name}
-                  </label>
-                </div>
-              ))}
+              {/* Добавляем опцию "Личные задачи" */}
+              <div className="flex items-center space-x-2 pb-2 border-b">
+                <Checkbox
+                  id="filter-project-personal"
+                  checked={filters.projects.includes('personal')}
+                  onCheckedChange={() => toggleArrayFilter('projects', 'personal')}
+                />
+                <label
+                  htmlFor="filter-project-personal"
+                  className="text-sm flex items-center gap-2 cursor-pointer flex-1"
+                >
+                  <User className="w-3 h-3 text-gray-500" />
+                  Личные задачи
+                </label>
+              </div>
+              {projects.length === 0 ? (
+                <div className="text-sm text-gray-500 py-2">Нет проектов</div>
+              ) : (
+                projects.map((project) => (
+                  <div key={project.id} className="flex items-center space-x-2">
+                    <Checkbox
+                      id={`filter-project-${project.id}`}
+                      checked={filters.projects.includes(project.id)}
+                      onCheckedChange={() => toggleArrayFilter('projects', project.id)}
+                    />
+                    <label
+                      htmlFor={`filter-project-${project.id}`}
+                      className="text-sm flex items-center gap-2 cursor-pointer flex-1"
+                    >
+                      <div className={`w-3 h-3 ${getColorClass(project.color)} rounded-sm`} />
+                      {project.name}
+                    </label>
+                  </div>
+                ))
+              )}
             </div>
           </div>
 
@@ -175,12 +197,12 @@ export function FiltersPanel({ filters, onFiltersChange, onClearFilters }: Filte
               {categoriesList.map((category) => (
                 <div key={category.id} className="flex items-center space-x-2">
                   <Checkbox
-                    id={`category-${category.id}`}
+                    id={`filter-category-${category.id}`}
                     checked={filters.categories.includes(category.id)}
                     onCheckedChange={() => toggleArrayFilter('categories', category.id)}
                   />
                   <label
-                    htmlFor={`category-${category.id}`}
+                    htmlFor={`filter-category-${category.id}`}
                     className="text-sm flex items-center gap-2 cursor-pointer flex-1"
                   >
                     <div className={`w-3 h-3 ${category.color} rounded-sm`} />
@@ -211,12 +233,12 @@ export function FiltersPanel({ filters, onFiltersChange, onClearFilters }: Filte
               {statusesList.map((status) => (
                 <div key={status.id} className="flex items-center space-x-2">
                   <Checkbox
-                    id={`status-${status.id}`}
+                    id={`filter-status-${status.id}`}
                     checked={filters.statuses.includes(status.id)}
                     onCheckedChange={() => toggleArrayFilter('statuses', status.id)}
                   />
                   <label
-                    htmlFor={`status-${status.id}`}
+                    htmlFor={`filter-status-${status.id}`}
                     className="text-sm cursor-pointer flex-1"
                   >
                     {status.name}
@@ -246,12 +268,12 @@ export function FiltersPanel({ filters, onFiltersChange, onClearFilters }: Filte
               {prioritiesList.map((priority) => (
                 <div key={priority.id} className="flex items-center space-x-2">
                   <Checkbox
-                    id={`priority-${priority.id}`}
+                    id={`filter-priority-${priority.id}`}
                     checked={filters.priorities.includes(priority.id)}
                     onCheckedChange={() => toggleArrayFilter('priorities', priority.id)}
                   />
                   <label
-                    htmlFor={`priority-${priority.id}`}
+                    htmlFor={`filter-priority-${priority.id}`}
                     className="text-sm cursor-pointer flex-1"
                   >
                     {priority.name}
@@ -278,56 +300,59 @@ export function FiltersPanel({ filters, onFiltersChange, onClearFilters }: Filte
               )}
             </div>
             <div className="space-y-2">
-              {assigneesList.map((assignee) => (
-                <div key={assignee.id} className="flex items-center space-x-2">
-                  <Checkbox
-                    id={`assignee-${assignee.id}`}
-                    checked={filters.assignees.includes(assignee.id)}
-                    onCheckedChange={() => toggleArrayFilter('assignees', assignee.id)}
-                  />
-                  <label
-                    htmlFor={`assignee-${assignee.id}`}
-                    className="text-sm cursor-pointer flex-1"
-                  >
-                    {assignee.name}
-                  </label>
-                </div>
-              ))}
+              {teamMembers.length === 0 ? (
+                <div className="text-sm text-gray-500 py-2">Нет участников</div>
+              ) : (
+                teamMembers.map((member) => (
+                  <div key={member.id} className="flex items-center space-x-2">
+                    <Checkbox
+                      id={`filter-assignee-${member.id}`}
+                      checked={filters.assignees.includes(member.id)}
+                      onCheckedChange={() => toggleArrayFilter('assignees', member.id)}
+                    />
+                    <label
+                      htmlFor={`filter-assignee-${member.id}`}
+                      className="text-sm cursor-pointer flex-1"
+                    >
+                      {member.name}
+                    </label>
+                  </div>
+                ))
+              )}
             </div>
           </div>
 
           <Separator />
 
           <div className="space-y-3">
-            <Label>Дедлайн (диапазон)</Label>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-2">
-                <Label htmlFor="deadline-from" className="text-xs text-gray-500">
-                  От
-                </Label>
-                <Input
-                  id="deadline-from"
-                  type="date"
-                  value={filters.deadlineFrom}
-                  onChange={(e) =>
-                    onFiltersChange({ ...filters, deadlineFrom: e.target.value })
-                  }
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="deadline-to" className="text-xs text-gray-500">
-                  До
-                </Label>
-                <Input
-                  id="deadline-to"
-                  type="date"
-                  value={filters.deadlineTo}
-                  onChange={(e) =>
-                    onFiltersChange({ ...filters, deadlineTo: e.target.value })
-                  }
-                />
-              </div>
+            <div className="flex items-center justify-between">
+              <Label>Дедлайн</Label>
+              {filters.deadline !== 'all' && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onFiltersChange({ ...filters, deadline: 'all' })}
+                  className="h-auto p-0 text-xs text-purple-600"
+                >
+                  Очистить
+                </Button>
+              )}
             </div>
+            <Select 
+              value={filters.deadline} 
+              onValueChange={(value: any) => onFiltersChange({ ...filters, deadline: value })}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Выберите период" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Все задачи</SelectItem>
+                <SelectItem value="overdue">Просрочено</SelectItem>
+                <SelectItem value="today">Сегодня</SelectItem>
+                <SelectItem value="3days">3 дня</SelectItem>
+                <SelectItem value="week">На этой неделе</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
 
           <Separator />

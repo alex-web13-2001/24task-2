@@ -11,7 +11,7 @@ import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Textarea } from './ui/textarea';
 import { Badge } from './ui/badge';
-import { Avatar, AvatarFallback } from './ui/avatar';
+import { Avatar, AvatarFallback, AvatarImage } from './ui/avatar';
 import { Separator } from './ui/separator';
 import {
   Select,
@@ -34,6 +34,7 @@ import {
   Upload,
   Download,
   History,
+  Loader2,
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { ru } from 'date-fns/locale';
@@ -48,6 +49,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from './ui/alert-dialog';
+import { useApp } from '../contexts/app-context';
 
 type TaskModalMode = 'create' | 'view' | 'edit';
 
@@ -61,15 +63,17 @@ type TaskModalProps = {
   onDelete?: (taskId: string) => void;
 };
 
-// Mock data
-const mockProjects = [
-  { id: 'personal', name: 'Мои задачи', color: 'bg-gray-500' },
-  { id: 'website', name: 'Веб-сайт', color: 'bg-purple-500' },
-  { id: 'backend', name: 'Backend', color: 'bg-green-500' },
-  { id: 'mobile', name: 'Мобильное приложение', color: 'bg-pink-500' },
-  { id: 'devops', name: 'DevOps', color: 'bg-orange-500' },
-  { id: 'design', name: 'Дизайн система', color: 'bg-blue-500' },
-];
+// Mock data - categories can stay as mock for now
+const getColorForProject = (color?: string) => {
+  const colorMap: Record<string, string> = {
+    purple: 'bg-purple-500',
+    green: 'bg-green-500',
+    pink: 'bg-pink-500',
+    orange: 'bg-orange-500',
+    blue: 'bg-blue-500',
+  };
+  return colorMap[color || ''] || 'bg-gray-500';
+};
 
 const mockCategories = [
   { id: 'none', name: 'Нет', color: 'bg-gray-400' },
@@ -80,12 +84,15 @@ const mockCategories = [
   { id: 'bugs', name: 'Баги', color: 'bg-red-500' },
 ];
 
-const mockAssignees = [
-  { id: 'ap', name: 'Александр Петров', short: 'АП' },
-  { id: 'mi', name: 'Мария Иванова', short: 'МИ' },
-  { id: 'es', name: 'Евгений Смирнов', short: 'ЕС' },
-  { id: 'dk', name: 'Дмитрий Козлов', short: 'ДК' },
-];
+// Helper to get initials from name
+const getInitials = (name: string) => {
+  return name
+    .split(' ')
+    .map(part => part[0])
+    .join('')
+    .toUpperCase()
+    .slice(0, 2);
+};
 
 const mockTags = ['UI/UX', 'срочно', 'дизайн', 'frontend', 'backend', 'API', 'тестирование'];
 
@@ -128,11 +135,35 @@ export function TaskModal({
   onSave,
   onDelete,
 }: TaskModalProps) {
+  const { 
+    tasks, 
+    projects, 
+    teamMembers,
+    currentUser,
+    createTask, 
+    updateTask, 
+    deleteTask,
+    uploadTaskAttachment,
+    deleteTaskAttachment,
+  } = useApp();
   const [mode, setMode] = React.useState<TaskModalMode>(initialMode);
+  const [isLoading, setIsLoading] = React.useState(false);
   
   const isEditMode = mode === 'edit';
   const isViewMode = mode === 'view';
   const isCreateMode = mode === 'create';
+
+  // Debug: log every render
+  React.useEffect(() => {
+    console.log('🔄 TaskModal render:', {
+      mode,
+      taskId,
+      open,
+      assigneeId,
+      projectId,
+      timestamp: new Date().toISOString(),
+    });
+  });
 
   // Reset mode when modal closes/opens
   React.useEffect(() => {
@@ -140,55 +171,146 @@ export function TaskModal({
   }, [initialMode, open]);
 
   // Загрузка данных задачи для режима просмотра/редактирования
-  const existingTask = taskId && !isCreateMode ? getTaskData(taskId) : null;
+  const existingTask = taskId && !isCreateMode ? tasks.find(t => t.id === taskId) : null;
+  
+  // Проверка прав на удаление задачи
+  const canDeleteTask = React.useMemo(() => {
+    if (!existingTask || !currentUser) return false;
+    
+    // Создатель задачи может удалить
+    if (existingTask.userId === currentUser.id) return true;
+    
+    // Владелец проекта может удалить
+    if (existingTask.projectId) {
+      const project = projects.find(p => p.id === existingTask.projectId);
+      if (project?.userId === currentUser.id) return true;
+    }
+    
+    return false;
+  }, [existingTask, currentUser, projects]);
 
   // Form state
   const [title, setTitle] = React.useState(existingTask?.title || '');
   const [description, setDescription] = React.useState(existingTask?.description || '');
-  const [projectId, setProjectId] = React.useState(existingTask?.projectId || initialProject || '');
+  const [projectId, setProjectId] = React.useState(existingTask?.projectId || initialProject || 'personal');
   const [categoryId, setCategoryId] = React.useState(existingTask?.categoryId || '');
   const [priority, setPriority] = React.useState(existingTask?.priority || 'medium');
-  const [status, setStatus] = React.useState(existingTask?.status || 'assigned');
+  const [status, setStatus] = React.useState(existingTask?.status || 'todo');
   const [assigneeId, setAssigneeId] = React.useState(existingTask?.assigneeId || '');
-  const [dueDate, setDueDate] = React.useState<Date | undefined>(existingTask?.dueDate);
+  const [dueDate, setDueDate] = React.useState<Date | undefined>(
+    existingTask?.deadline ? new Date(existingTask.deadline) : undefined
+  );
   const [tags, setTags] = React.useState<string[]>(existingTask?.tags || []);
   const [newTag, setNewTag] = React.useState('');
-  const [attachments, setAttachments] = React.useState<any[]>(existingTask?.attachments || []);
+  const [pendingFiles, setPendingFiles] = React.useState<File[]>([]);
+  const [isUploadingFiles, setIsUploadingFiles] = React.useState(false);
   
   const [showDeleteDialog, setShowDeleteDialog] = React.useState(false);
   const [errors, setErrors] = React.useState<Record<string, string>>({});
+  const [customColumns, setCustomColumns] = React.useState<Array<{ id: string; title: string; color: string }>>([]);
 
+  // Load custom columns from localStorage
+  React.useEffect(() => {
+    if (currentUser) {
+      const stored = localStorage.getItem(`personal-custom-columns-${currentUser.id}`);
+      if (stored) {
+        try {
+          setCustomColumns(JSON.parse(stored));
+        } catch (e) {
+          console.error('Error loading custom columns:', e);
+          setCustomColumns([]);
+        }
+      } else {
+        setCustomColumns([]);
+      }
+    }
+  }, [currentUser, open]); // Перезагружаем при открытии модалки
+
+  // Track if form has been initialized to prevent re-setting values
+  const formInitializedRef = React.useRef<string | null>(null);
+  
   // Update form when switching modes or task changes
   React.useEffect(() => {
-    if (existingTask) {
-      setTitle(existingTask.title);
-      setDescription(existingTask.description);
-      setProjectId(existingTask.projectId);
-      setCategoryId(existingTask.categoryId);
-      setPriority(existingTask.priority);
-      setStatus(existingTask.status);
-      setAssigneeId(existingTask.assigneeId);
-      setDueDate(existingTask.dueDate);
-      setTags(existingTask.tags);
-      setAttachments(existingTask.attachments);
-    } else if (isCreateMode) {
+    const currentTaskId = existingTask?.id || 'create';
+    const shouldInitialize = formInitializedRef.current !== currentTaskId || !open;
+    
+    if (existingTask && shouldInitialize) {
+      console.log('📝 Обновление формы из existingTask:', {
+        taskId: existingTask.id,
+        title: existingTask.title,
+        projectId: existingTask.projectId || 'personal',
+        assigneeId: existingTask.assigneeId,
+      });
+      
+      setTitle(existingTask.title || '');
+      setDescription(existingTask.description || '');
+      setProjectId(existingTask.projectId || 'personal');
+      setCategoryId(existingTask.categoryId || '');
+      setPriority(existingTask.priority || 'medium');
+      setStatus(existingTask.status || 'todo');
+      setAssigneeId(existingTask.assigneeId || '');
+      setDueDate(existingTask.deadline ? new Date(existingTask.deadline) : undefined);
+      setTags(existingTask.tags || []);
+      
+      formInitializedRef.current = currentTaskId;
+    } else if (isCreateMode && shouldInitialize) {
+      console.log('📝 Инициализация формы для создания задачи, initialProject:', initialProject);
       setProjectId(initialProject || 'personal');
       setCategoryId('none');
+      formInitializedRef.current = currentTaskId;
     }
-  }, [existingTask, isCreateMode, initialProject]);
+  }, [existingTask, isCreateMode, initialProject, open]);
+  
+  // Reset formInitializedRef when modal closes
+  React.useEffect(() => {
+    if (!open) {
+      formInitializedRef.current = null;
+    }
+  }, [open]);
+
+  // Auto-assign current user for personal tasks (only when projectId changes)
+  const prevProjectIdRef = React.useRef(projectId);
+  React.useEffect(() => {
+    // Только если projectId реально изменился
+    if (prevProjectIdRef.current !== projectId) {
+      console.log('🔄 projectId изменился:', {
+        from: prevProjectIdRef.current,
+        to: projectId,
+        isPersonal: projectId === 'personal',
+        isEditMode: !!taskId,
+        currentAssigneeId: assigneeId,
+      });
+      
+      if (projectId === 'personal' && currentUser) {
+        // Для "Личные задачи" автоматически назначаем текущего пользователя
+        console.log('  → Устанавливаем assigneeId в', currentUser.id, '(текущий пользователь для личных задач)');
+        setAssigneeId(currentUser.id);
+      } else if (projectId !== 'personal' && !taskId) {
+        // При переключении на другой проект (и это создание новой задачи),
+        // очищаем исполнителя только если это не редактирование
+        console.log('  → Очищаем assigneeId (переключение на проект при создании задачи)');
+        setAssigneeId('');
+      } else {
+        console.log('  → Оставляем assigneeId без изменений (редактирование задачи)');
+      }
+      prevProjectIdRef.current = projectId;
+    }
+  }, [projectId, currentUser, taskId]); // УБРАЛИ assigneeId из зависимостей!
 
   const resetForm = () => {
     setTitle('');
     setDescription('');
-    setProjectId(initialProject || 'personal');
+    const newProjectId = initialProject || 'personal';
+    setProjectId(newProjectId);
     setCategoryId('none');
     setPriority('medium');
-    setStatus('assigned');
-    setAssigneeId('');
+    setStatus('todo');
+    // Если сброс формы для личных задач, устанавливаем текущего пользователя
+    setAssigneeId(newProjectId === 'personal' && currentUser ? currentUser.id : '');
     setDueDate(undefined);
     setTags([]);
     setNewTag('');
-    setAttachments([]);
+    setPendingFiles([]);
     setErrors({});
   };
 
@@ -206,7 +328,7 @@ export function TaskModal({
     return Object.keys(newErrors).length === 0;
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (!validateForm()) {
@@ -214,39 +336,110 @@ export function TaskModal({
       return;
     }
 
-    const taskData = {
-      id: existingTask?.id || `task-${Date.now()}`,
-      title,
-      description,
-      projectId,
-      categoryId,
-      priority,
-      status,
-      assigneeId,
-      dueDate,
-      tags,
-      attachments,
-    };
+    setIsLoading(true);
 
-    onSave?.(taskData);
-    
-    if (isCreateMode) {
-      toast.success('Задача создана успешно');
-      resetForm();
-    } else {
-      toast.success('Изменения сохранены');
+    try {
+      // Для личных задач всегда устанавливаем исполнителя как текущего пользователя
+      const finalAssigneeId = projectId === 'personal' && currentUser 
+        ? currentUser.id 
+        : (assigneeId || undefined);
+
+      const taskData = {
+        title,
+        description,
+        projectId: projectId === 'personal' ? undefined : projectId,
+        categoryId,
+        priority,
+        status,
+        assigneeId: finalAssigneeId,
+        deadline: dueDate?.toISOString(),
+        tags,
+        completed: status === 'done',
+      };
+
+      console.log('📝 TaskModal - Creating/updating task:', {
+        mode: isCreateMode ? 'create' : 'edit',
+        taskData,
+        initialProject,
+        selectedProjectId: projectId,
+        isPersonal: projectId === 'personal',
+        assigneeId,
+        finalAssigneeId,
+        availableMembers: availableMembersWithCurrent.map(m => ({ id: m.id, name: m.name })),
+      });
+
+      let savedTask;
+      if (isCreateMode) {
+        savedTask = await createTask(taskData);
+        console.log('✅ Task created:', savedTask);
+        onSave?.(taskData);
+      } else if (existingTask) {
+        savedTask = await updateTask(existingTask.id, taskData);
+        console.log('✅ Task updated:', savedTask);
+        onSave?.(taskData);
+      }
+
+      // Upload pending files
+      if (pendingFiles.length > 0 && savedTask) {
+        setIsUploadingFiles(true);
+        console.log(`📎 Uploading ${pendingFiles.length} file(s) for task ${savedTask.id}`);
+        
+        let successCount = 0;
+        let failCount = 0;
+        
+        for (const file of pendingFiles) {
+          try {
+            console.log(`⬆️ Uploading file: ${file.name} (${(file.size / 1024).toFixed(2)} KB)`);
+            await uploadTaskAttachment(savedTask.id, file);
+            successCount++;
+            console.log(`✅ File uploaded: ${file.name}`);
+          } catch (uploadError: any) {
+            failCount++;
+            console.error(`❌ File upload error for ${file.name}:`, uploadError);
+            toast.error(`Ошибка загрузки файла ${file.name}: ${uploadError.message || 'Неизвестная ошибка'}`);
+            // Continue with other files even if one fails
+          }
+        }
+        
+        setIsUploadingFiles(false);
+        setPendingFiles([]);
+        
+        if (successCount > 0) {
+          toast.success(`Загружено файлов: ${successCount}`);
+        }
+        if (failCount > 0) {
+          toast.warning(`Не удалось загрузить файлов: ${failCount}`);
+        }
+        
+        console.log(`📎 Upload complete: ${successCount} success, ${failCount} failed`);
+      }
+      
+      if (isCreateMode) {
+        resetForm();
+      }
+      onOpenChange(false);
+    } catch (error) {
+      console.error('Task save error:', error);
+    } finally {
+      setIsLoading(false);
+      setIsUploadingFiles(false);
     }
-    
-    onOpenChange(false);
   };
 
-  const handleDelete = () => {
-    if (taskId) {
+  const handleDelete = async () => {
+    if (!taskId) return;
+    
+    setIsLoading(true);
+    try {
+      await deleteTask(taskId);
       onDelete?.(taskId);
-      toast.success('Задача удалена');
+      setShowDeleteDialog(false);
       onOpenChange(false);
+    } catch (error) {
+      console.error('Task delete error:', error);
+    } finally {
+      setIsLoading(false);
     }
-    setShowDeleteDialog(false);
   };
 
   const addTag = (tag?: string) => {
@@ -264,18 +457,35 @@ export function TaskModal({
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (files) {
-      const newAttachments = Array.from(files).map((file) => ({
-        id: `file-${Date.now()}-${Math.random()}`,
-        name: file.name,
-        size: `${(file.size / 1024 / 1024).toFixed(2)} MB`,
-        url: URL.createObjectURL(file),
-      }));
-      setAttachments([...attachments, ...newAttachments]);
+      const newFiles = Array.from(files);
+      
+      // Validate file sizes
+      const oversizedFiles = newFiles.filter(f => f.size > 10 * 1024 * 1024);
+      if (oversizedFiles.length > 0) {
+        toast.error('Некоторые файлы превышают максимальный размер 10MB');
+        return;
+      }
+      
+      setPendingFiles([...pendingFiles, ...newFiles]);
     }
+    e.target.value = ''; // Reset input
   };
 
-  const removeAttachment = (attachmentId: string) => {
-    setAttachments(attachments.filter((a) => a.id !== attachmentId));
+  const removePendingFile = (index: number) => {
+    setPendingFiles(pendingFiles.filter((_, i) => i !== index));
+  };
+
+  const handleDeleteExistingAttachment = async (attachmentId: string) => {
+    if (!existingTask) return;
+    
+    try {
+      setIsLoading(true);
+      await deleteTaskAttachment(existingTask.id, attachmentId);
+    } catch (error) {
+      console.error('Delete attachment error:', error);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const renderDescription = (text: string) => {
@@ -300,9 +510,191 @@ export function TaskModal({
     });
   };
 
-  const selectedProject = mockProjects.find((p) => p.id === projectId);
+  const selectedProject = React.useMemo(() => {
+    return projectId === 'personal' 
+      ? { id: 'personal', name: 'Личные задачи', color: 'gray' }
+      : projects.find((p) => p.id === projectId);
+  }, [projectId, projects]);
+  
   const selectedCategory = mockCategories.find((c) => c.id === categoryId);
-  const selectedAssignee = mockAssignees.find((a) => a.id === assigneeId);
+  
+  // Filter team members to show only members of the selected project
+  // Use a stable list that includes current assigneeId without causing re-renders
+  const availableMembers = React.useMemo(() => {
+    if (projectId === 'personal') {
+      return []; // Personal tasks don't need assignee selection
+    }
+    
+    if (!selectedProject || !selectedProject.id || selectedProject.id === 'personal') {
+      return teamMembers;
+    }
+    
+    // Build a map of all available members
+    const membersMap = new Map();
+    
+    // First, add all teamMembers who are part of this project
+    // Add project owner from teamMembers
+    if (selectedProject.userId) {
+      const ownerMember = teamMembers.find(m => m.id === selectedProject.userId);
+      if (ownerMember) {
+        membersMap.set(ownerMember.id, ownerMember);
+      }
+    }
+    
+    // Add project members from teamMembers
+    if (selectedProject.members && Array.isArray(selectedProject.members)) {
+      selectedProject.members.forEach((member: any) => {
+        // Real members (added via invitation) have userId
+        const memberId = member.userId || member.id;
+        if (memberId) {
+          const teamMember = teamMembers.find(m => m.id === memberId);
+          if (teamMember) {
+            membersMap.set(teamMember.id, teamMember);
+          }
+        }
+      });
+    }
+    
+    // CRITICAL FIX: If a member is in project.members but not in teamMembers,
+    // create a temporary member object from project.members data
+    if (selectedProject.members && Array.isArray(selectedProject.members)) {
+      selectedProject.members.forEach((member: any) => {
+        const memberId = member.userId || member.id;
+        if (memberId && !membersMap.has(memberId)) {
+          console.log(`⚠️ Member ${memberId} (${member.name || member.email}) is in project.members but not in teamMembers, creating temporary member object`);
+          membersMap.set(memberId, {
+            id: memberId,
+            name: member.name || member.email,
+            email: member.email,
+            avatarUrl: member.avatar || member.avatarUrl,
+          });
+        }
+      });
+    }
+    
+    // Also include existing task assignee (from existingTask, not current assigneeId state)
+    // This prevents re-renders when assigneeId changes
+    if (existingTask?.assigneeId && !membersMap.has(existingTask.assigneeId)) {
+      console.log(`⚠️ Task assignee ${existingTask.assigneeId} is not in available members`);
+      // Try to find in project members first
+      const projectMember = selectedProject.members?.find((m: any) => 
+        m.userId === existingTask.assigneeId || m.id === existingTask.assigneeId
+      );
+      if (projectMember) {
+        const memberId = projectMember.userId || projectMember.id;
+        membersMap.set(memberId, {
+          id: memberId,
+          name: projectMember.name || projectMember.email,
+          email: projectMember.email,
+          avatarUrl: projectMember.avatar || projectMember.avatarUrl,
+        });
+      } else {
+        // Last resort: try to find in all teamMembers
+        const teamMember = teamMembers.find(m => m.id === existingTask.assigneeId);
+        if (teamMember) {
+          membersMap.set(teamMember.id, teamMember);
+        }
+      }
+    }
+    
+    const result = Array.from(membersMap.values());
+    
+    // Log for debugging
+    console.log('🔍 availableMembers пересчитан для проекта', selectedProject?.name, ':', {
+      projectId,
+      projectUserId: selectedProject.userId,
+      projectMembersCount: selectedProject.members?.length || 0,
+      teamMembersCount: teamMembers.length,
+      resultCount: result.length,
+      result: result.map(m => ({ id: m.id, name: m.name })),
+      existingAssigneeId: existingTask?.assigneeId,
+      timestamp: new Date().toISOString(),
+    });
+    
+    return result;
+  }, [projectId, selectedProject, teamMembers, existingTask]);
+  
+  // Создаем расширенный список availableMembers, который включает текущий assigneeId
+  // Это предотвращает сброс значения в Select
+  const availableMembersWithCurrent = React.useMemo(() => {
+    if (!assigneeId || projectId === 'personal') {
+      return availableMembers;
+    }
+    
+    // Проверяем, есть ли assigneeId в списке
+    const memberExists = availableMembers.some(m => m.id === assigneeId);
+    if (memberExists) {
+      return availableMembers;
+    }
+    
+    // Если нет, пытаемся добавить из project.members
+    console.log(`⚠️ Current assigneeId ${assigneeId} not in availableMembers, trying to add`);
+    
+    const projectMember = selectedProject?.members?.find((m: any) => 
+      m.userId === assigneeId || m.id === assigneeId
+    );
+    
+    if (projectMember) {
+      const memberId = projectMember.userId || projectMember.id;
+      const tempMember = {
+        id: memberId,
+        name: projectMember.name || projectMember.email,
+        email: projectMember.email,
+        avatarUrl: projectMember.avatar || projectMember.avatarUrl,
+      };
+      console.log(`  → Добавлен временный участник:`, tempMember);
+      return [...availableMembers, tempMember];
+    }
+    
+    // Last resort: try to find in all teamMembers
+    const teamMember = teamMembers.find(m => m.id === assigneeId);
+    if (teamMember) {
+      console.log(`  → Добавлен участник из teamMembers:`, teamMember);
+      return [...availableMembers, teamMember];
+    }
+    
+    console.warn(`  ❌ Не удалось найти участника с id ${assigneeId}`);
+    return availableMembers;
+  }, [availableMembers, assigneeId, projectId, selectedProject, teamMembers]);
+  
+  const selectedAssignee = availableMembersWithCurrent.find((m) => m.id === assigneeId);
+  
+  // Найти автора задачи (createdBy)
+  const taskAuthor = React.useMemo(() => {
+    if (!existingTask?.createdBy) return null;
+    
+    // Сначала ищем в teamMembers
+    let author = teamMembers.find(m => m.id === existingTask.createdBy);
+    
+    // Если не нашли, проверяем, не является ли автором текущий пользователь
+    if (!author && currentUser?.id === existingTask.createdBy) {
+      author = {
+        id: currentUser.id,
+        name: currentUser.name,
+        email: currentUser.email,
+        avatarUrl: currentUser.avatarUrl,
+      };
+    }
+    
+    // Если все еще не нашли, пробуем найти в project.members
+    if (!author && existingTask.projectId && selectedProject?.members) {
+      const projectMember = selectedProject.members.find((m: any) => 
+        m.userId === existingTask.createdBy || m.id === existingTask.createdBy
+      );
+      if (projectMember) {
+        author = {
+          id: projectMember.userId || projectMember.id,
+          name: projectMember.name || projectMember.email,
+          email: projectMember.email,
+          avatarUrl: projectMember.avatar || projectMember.avatarUrl,
+        };
+      }
+    }
+    
+    return author;
+  }, [existingTask, teamMembers, currentUser, selectedProject]);
+  
+  const existingAttachments = existingTask?.attachments || [];
 
   return (
     <>
@@ -319,16 +711,18 @@ export function TaskModal({
                 {isViewMode && existingTask && (
                   <>
                     <div className="flex items-center gap-2 mb-2">
-                      <Badge className={existingTask.projectColor} variant="secondary">
-                        {existingTask.project}
-                      </Badge>
-                      <Badge
-                        variant="outline"
-                        className={`${existingTask.categoryColor} text-white border-0`}
-                      >
-                        <Tag className="w-3 h-3 mr-1" />
-                        {existingTask.category}
-                      </Badge>
+                      {selectedProject && (
+                        <Badge variant="outline" className="bg-blue-50 text-blue-700 border-blue-200">
+                          <div className={`w-2 h-2 rounded-full ${getColorForProject(selectedProject.color)} mr-1`} />
+                          {selectedProject.name}
+                        </Badge>
+                      )}
+                      {selectedCategory && selectedCategory.id !== 'none' && (
+                        <Badge variant="outline" className="bg-purple-100 text-purple-700 border-purple-300">
+                          <Tag className="w-3 h-3 mr-1" />
+                          {selectedCategory.name}
+                        </Badge>
+                      )}
                     </div>
                     <DialogTitle className="text-2xl">{existingTask.title}</DialogTitle>
                   </>
@@ -339,12 +733,13 @@ export function TaskModal({
                   {isViewMode && 'Просмотр задачи'}
                 </DialogDescription>
               </div>
-              {isEditMode && (
+              {isEditMode && canDeleteTask && (
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="text-red-600 hover:text-red-700"
+                  className="text-red-600 hover:text-red-700 hover:bg-red-50"
                   onClick={() => setShowDeleteDialog(true)}
+                  title="Удалить задачу"
                 >
                   <Trash2 className="w-4 h-4" />
                 </Button>
@@ -358,92 +753,133 @@ export function TaskModal({
               {/* Основная информация */}
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-3">
-                  <div className="flex items-center gap-2 text-sm">
-                    <User className="w-4 h-4 text-gray-500" />
-                    <span className="text-gray-600">Исполнитель:</span>
-                    <div className="flex items-center gap-2">
-                      <Avatar className="w-6 h-6">
-                        <AvatarFallback className="text-xs bg-purple-100 text-purple-600">
-                          {existingTask.assigneeShort}
-                        </AvatarFallback>
-                      </Avatar>
-                      <span className="text-sm">{existingTask.assignee}</span>
+                  {dueDate && (
+                    <div className="flex items-center gap-2 text-sm">
+                      <Calendar className="w-4 h-4 text-gray-500" />
+                      <span className="text-gray-600">Дедлайн:</span>
+                      <span className="text-red-600">
+                        {format(dueDate, 'PPP', { locale: ru })}
+                      </span>
                     </div>
-                  </div>
-
-                  <div className="flex items-center gap-2 text-sm">
-                    <Calendar className="w-4 h-4 text-gray-500" />
-                    <span className="text-gray-600">Дедлайн:</span>
-                    <span className="text-red-600">
-                      {format(existingTask.dueDate, 'PPP', { locale: ru })}
-                    </span>
-                  </div>
+                  )}
 
                   <div className="flex items-center gap-2 text-sm">
                     <Flame className="w-4 h-4 text-gray-500" />
                     <span className="text-gray-600">Приоритет:</span>
-                    <div className="flex items-center gap-1">
+                    <Badge variant="outline" className={
+                      existingTask.priority === 'low' ? 'bg-gray-100 text-gray-700 border-gray-300' :
+                      existingTask.priority === 'medium' ? 'bg-yellow-100 text-yellow-700 border-yellow-300' :
+                      existingTask.priority === 'high' ? 'bg-red-100 text-red-700 border-red-300' :
+                      'bg-orange-100 text-orange-700 border-orange-300'
+                    }>
                       {existingTask.priority === 'urgent' && (
-                        <Flame className="w-4 h-4 text-orange-600 fill-current" />
+                        <Flame className="w-3 h-3 mr-1 fill-current" />
                       )}
-                      {existingTask.priority === 'high' && (
-                        <Flame className="w-4 h-4 text-red-600 fill-current" />
-                      )}
-                      <span>
-                        {existingTask.priority === 'urgent' && 'Срочный🔥'}
-                        {existingTask.priority === 'high' && 'Высокий'}
-                        {existingTask.priority === 'medium' && 'Средний'}
-                        {existingTask.priority === 'low' && 'Низкий'}
-                      </span>
-                    </div>
+                      {existingTask.priority === 'urgent' && 'Срочный'}
+                      {existingTask.priority === 'high' && 'Высокий'}
+                      {existingTask.priority === 'medium' && 'Средний'}
+                      {existingTask.priority === 'low' && 'Низкий'}
+                    </Badge>
                   </div>
+
+                  <div className="flex items-center gap-2 text-sm">
+                    <span className="text-gray-600">Статус:</span>
+                    <Badge variant="outline" className={
+                      status === 'todo' ? 'bg-gray-100 text-gray-700 border-gray-300' :
+                      status === 'in_progress' ? 'bg-blue-100 text-blue-700 border-blue-300' :
+                      status === 'review' ? 'bg-yellow-100 text-yellow-700 border-yellow-300' :
+                      status === 'done' ? 'bg-green-100 text-green-700 border-green-300' :
+                      'bg-purple-100 text-purple-700 border-purple-300'
+                    }>
+                      {status === 'todo' && 'К выполнению'}
+                      {status === 'in_progress' && 'В работе'}
+                      {status === 'review' && 'На проверке'}
+                      {status === 'done' && 'Готово'}
+                      {!['todo', 'in_progress', 'review', 'done'].includes(status) && 
+                        (customColumns.find(col => col.id === status)?.title || status)
+                      }
+                    </Badge>
+                  </div>
+
+                  {selectedAssignee && (
+                    <div className="flex items-center gap-2 text-sm">
+                      <User className="w-4 h-4 text-gray-500" />
+                      <span className="text-gray-600">Исполнитель:</span>
+                      <div className="flex items-center gap-2">
+                        <Avatar className="w-6 h-6">
+                          {selectedAssignee.avatarUrl && (
+                            <AvatarImage src={selectedAssignee.avatarUrl} alt={selectedAssignee.name} />
+                          )}
+                          <AvatarFallback className="text-xs bg-purple-100 text-purple-700">
+                            {getInitials(selectedAssignee.name)}
+                          </AvatarFallback>
+                        </Avatar>
+                        <span className="text-sm">{selectedAssignee.name}</span>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <div className="space-y-3">
-                  <div className="flex items-center gap-2 text-sm">
-                    <User className="w-4 h-4 text-gray-500" />
-                    <span className="text-gray-600">Создатель:</span>
-                    <div className="flex items-center gap-2">
-                      <Avatar className="w-6 h-6">
-                        <AvatarFallback className="text-xs bg-purple-100 text-purple-600">
-                          {existingTask.creatorShort}
-                        </AvatarFallback>
-                      </Avatar>
-                      <span className="text-sm">{existingTask.creator}</span>
+                  {taskAuthor && (
+                    <div className="flex items-center gap-2 text-sm">
+                      <User className="w-4 h-4 text-gray-500" />
+                      <span className="text-gray-600">Автор:</span>
+                      <div className="flex items-center gap-2">
+                        <Avatar className="w-6 h-6">
+                          {taskAuthor.avatarUrl && (
+                            <AvatarImage src={taskAuthor.avatarUrl} alt={taskAuthor.name} />
+                          )}
+                          <AvatarFallback className="text-xs bg-green-100 text-green-700">
+                            {getInitials(taskAuthor.name)}
+                          </AvatarFallback>
+                        </Avatar>
+                        <span className="text-sm">{taskAuthor.name}</span>
+                      </div>
                     </div>
-                  </div>
+                  )}
+                
+                  {existingTask.createdAt && (
+                    <div className="flex items-center gap-2 text-sm">
+                      <Clock className="w-4 h-4 text-gray-500" />
+                      <span className="text-gray-600">Создано:</span>
+                      <span className="text-sm">
+                        {format(new Date(existingTask.createdAt), 'PPP', { locale: ru })}
+                      </span>
+                    </div>
+                  )}
 
-                  <div className="flex items-center gap-2 text-sm">
-                    <Clock className="w-4 h-4 text-gray-500" />
-                    <span className="text-gray-600">Создано:</span>
-                    <span className="text-sm">{existingTask.createdAt}</span>
-                  </div>
-
-                  <div className="flex items-center gap-2 text-sm">
-                    <Clock className="w-4 h-4 text-gray-500" />
-                    <span className="text-gray-600">Обновлено:</span>
-                    <span className="text-sm">{existingTask.updatedAt}</span>
-                  </div>
+                  {existingTask.updatedAt && (
+                    <div className="flex items-center gap-2 text-sm">
+                      <Clock className="w-4 h-4 text-gray-500" />
+                      <span className="text-gray-600">Обновлено:</span>
+                      <span className="text-sm">
+                        {format(new Date(existingTask.updatedAt), 'PPP', { locale: ru })}
+                      </span>
+                    </div>
+                  )}
                 </div>
               </div>
 
               <Separator />
 
               {/* Описание */}
-              <div>
-                <h4 className="mb-2">Описание</h4>
-                <p className="text-sm text-gray-600 leading-relaxed whitespace-pre-wrap">
-                  {renderDescription(existingTask.description)}
-                </p>
-              </div>
+              {description && (
+                <div>
+                  <h4 className="mb-2">Описание</h4>
+                  <p className="text-sm text-gray-600 leading-relaxed whitespace-pre-wrap">
+                    {description}
+                  </p>
+                </div>
+              )}
 
               {/* Теги */}
-              {existingTask.tags.length > 0 && (
+              {tags && tags.length > 0 && (
                 <div>
                   <h4 className="mb-2">Теги</h4>
                   <div className="flex flex-wrap gap-2">
-                    {existingTask.tags.map((tag) => (
-                      <Badge key={tag} variant="secondary">
+                    {tags.map((tag) => (
+                      <Badge key={tag} variant="outline" className="bg-blue-100 text-blue-700 border-blue-200">
                         {tag}
                       </Badge>
                     ))}
@@ -454,14 +890,14 @@ export function TaskModal({
               <Separator />
 
               {/* Вложения */}
-              {existingTask.attachments.length > 0 && (
+              {existingAttachments && existingAttachments.length > 0 && (
                 <div>
                   <div className="flex items-center gap-2 mb-3">
                     <Paperclip className="w-4 h-4" />
-                    <h4>Вложения ({existingTask.attachments.length})</h4>
+                    <h4>Вложения ({existingAttachments.length})</h4>
                   </div>
                   <div className="space-y-2">
-                    {existingTask.attachments.map((attachment) => (
+                    {existingAttachments.map((attachment) => (
                       <div
                         key={attachment.id}
                         className="flex items-center justify-between p-3 bg-gray-50 rounded-lg hover:bg-gray-100 cursor-pointer"
@@ -470,10 +906,19 @@ export function TaskModal({
                           <Paperclip className="w-4 h-4 text-gray-500" />
                           <div>
                             <p className="text-sm">{attachment.name}</p>
-                            <p className="text-xs text-gray-500">{attachment.size}</p>
+                            <p className="text-xs text-gray-500">
+                              {(attachment.size / 1024 / 1024).toFixed(2)} MB
+                            </p>
                           </div>
                         </div>
-                        <Button variant="ghost" size="sm">
+                        <Button 
+                          variant="ghost" 
+                          size="sm"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            window.open(attachment.url, '_blank');
+                          }}
+                        >
                           <Download className="w-4 h-4 mr-2" />
                           Скачать
                         </Button>
@@ -490,10 +935,16 @@ export function TaskModal({
                 <Button variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
                   Закрыть
                 </Button>
-                <Button variant="outline" className="flex-1">
-                  <History className="w-4 h-4 mr-2" />
-                  История изменений
-                </Button>
+                {canDeleteTask && (
+                  <Button 
+                    variant="outline" 
+                    className="text-red-600 hover:text-red-700 hover:bg-red-50 border-red-200"
+                    onClick={() => setShowDeleteDialog(true)}
+                  >
+                    <Trash2 className="w-4 h-4 mr-2" />
+                    Удалить
+                  </Button>
+                )}
                 <Button className="flex-1 bg-purple-600 hover:bg-purple-700" onClick={() => setMode('edit')}>
                   Редактировать
                 </Button>
@@ -542,12 +993,12 @@ export function TaskModal({
                       <SelectValue placeholder="Выберите проект" />
                     </SelectTrigger>
                     <SelectContent>
-                      {mockProjects.map((project) => (
+                      <SelectItem value="personal">
+                        Личные задачи
+                      </SelectItem>
+                      {projects.map((project) => (
                         <SelectItem key={project.id} value={project.id}>
-                          <div className="flex items-center gap-2">
-                            <div className={`w-3 h-3 rounded-full ${project.color}`} />
-                            {project.name}
-                          </div>
+                          {project.name}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -564,10 +1015,7 @@ export function TaskModal({
                     <SelectContent>
                       {mockCategories.map((category) => (
                         <SelectItem key={category.id} value={category.id}>
-                          <div className="flex items-center gap-2">
-                            <div className={`w-3 h-3 rounded-full ${category.color}`} />
-                            {category.name}
-                          </div>
+                          {category.name}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -583,10 +1031,15 @@ export function TaskModal({
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="low">Низкий (Low)</SelectItem>
-                      <SelectItem value="medium">Средний (Medium)</SelectItem>
-                      <SelectItem value="high">Высокий (High)</SelectItem>
-                      <SelectItem value="urgent">Срочный🔥 (Urgent)</SelectItem>
+                      <SelectItem value="low">Низкий</SelectItem>
+                      <SelectItem value="medium">Средний</SelectItem>
+                      <SelectItem value="high">Высокий</SelectItem>
+                      <SelectItem value="urgent">
+                        <div className="flex items-center gap-1">
+                          <Flame className="w-3 h-3 fill-current text-orange-600" />
+                          Срочный
+                        </div>
+                      </SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -598,33 +1051,101 @@ export function TaskModal({
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="assigned">Назначено (Assigned)</SelectItem>
-                      <SelectItem value="in-progress">В работе (In Progress)</SelectItem>
-                      <SelectItem value="review">На проверке (Review)</SelectItem>
-                      <SelectItem value="done">Готово (Done)</SelectItem>
+                      {projectId === 'personal' ? (
+                        <>
+                          <SelectItem value="todo">К выполнению</SelectItem>
+                          <SelectItem value="in_progress">В работе</SelectItem>
+                          <SelectItem value="done">Готово</SelectItem>
+                          {customColumns.map((col) => (
+                            <SelectItem key={col.id} value={col.id}>
+                              {col.title}
+                            </SelectItem>
+                          ))}
+                        </>
+                      ) : (
+                        <>
+                          <SelectItem value="todo">К выполнению</SelectItem>
+                          <SelectItem value="in_progress">В работе</SelectItem>
+                          <SelectItem value="review">На проверке</SelectItem>
+                          <SelectItem value="done">Готово</SelectItem>
+                        </>
+                      )}
                     </SelectContent>
                   </Select>
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label>Исполнитель</Label>
-                  <Select value={assigneeId} onValueChange={setAssigneeId}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Выберите исполнителя" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {mockAssignees.map((assignee) => (
-                        <SelectItem key={assignee.id} value={assignee.id}>
-                          {assignee.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+              {/* Информация для личных задач */}
+              {projectId === 'personal' && currentUser && (
+                <div className="bg-purple-50 border border-purple-200 rounded-lg p-3 flex items-start gap-2">
+                  <User className="w-4 h-4 text-purple-600 mt-0.5 flex-shrink-0" />
+                  <div className="text-sm text-purple-900">
+                    <p className="font-medium">Личная задача</p>
+                    <p className="text-purple-700 mt-0.5">
+                      Исполнитель: <span className="font-medium">{currentUser.name}</span> (вы)
+                    </p>
+                  </div>
                 </div>
+              )}
 
-                <div className="space-y-2">
+              <div className="grid grid-cols-2 gap-4">
+                {/* Поле исполнителя скрыто для личных задач */}
+                {projectId !== 'personal' && (
+                  <div className="space-y-2">
+                    <Label>Исполнитель</Label>
+                    <Select 
+                      value={(() => {
+                        // Проверяем, что выбранное значение есть в списке
+                        if (!assigneeId) return 'unassigned';
+                        const memberExists = availableMembersWithCurrent.some(m => m.id === assigneeId);
+                        if (!memberExists) {
+                          console.warn('⚠️ Выбранный assigneeId не найден в availableMembersWithCurrent:', {
+                            assigneeId,
+                            availableMembers: availableMembersWithCurrent.map(m => ({ id: m.id, name: m.name })),
+                          });
+                          return 'unassigned';
+                        }
+                        return assigneeId;
+                      })()} 
+                      onValueChange={(value) => {
+                        const newValue = value === 'unassigned' ? '' : value;
+                        console.log('👤 Изменение исполнителя:', {
+                          oldValue: assigneeId,
+                          newValue,
+                          selectedMember: availableMembersWithCurrent.find(m => m.id === newValue),
+                          availableMembers: availableMembersWithCurrent.map(m => ({ id: m.id, name: m.name })),
+                        });
+                        setAssigneeId(newValue);
+                      }}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Выберите исполнителя" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="unassigned">
+                          Не назначено
+                        </SelectItem>
+                        {availableMembersWithCurrent.map((member) => (
+                          <SelectItem key={member.id} value={member.id}>
+                            <div className="flex items-center gap-2">
+                              <Avatar className="w-5 h-5">
+                                {member.avatarUrl && (
+                                  <AvatarImage src={member.avatarUrl} alt={member.name} />
+                                )}
+                                <AvatarFallback className="text-xs bg-purple-100 text-purple-700">
+                                  {getInitials(member.name)}
+                                </AvatarFallback>
+                              </Avatar>
+                              {member.name}
+                            </div>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+
+                <div className={`space-y-2 ${projectId === 'personal' ? 'col-span-2' : ''}`}>
                   <Label>Дедлайн</Label>
                   <Popover>
                     <PopoverTrigger asChild>
@@ -695,18 +1216,24 @@ export function TaskModal({
                     onChange={handleFileUpload}
                     className="hidden"
                     id="file-upload"
+                    disabled={isLoading || isUploadingFiles}
                   />
                   <label htmlFor="file-upload" className="cursor-pointer">
                     <Upload className="w-8 h-8 mx-auto mb-2 text-gray-400" />
                     <p className="text-sm text-gray-600">
                       Перетащите файлы сюда или нажмите для выбора
                     </p>
-                    <p className="text-xs text-gray-500 mt-1">Поддерживаются любые типы файлов</p>
+                    <p className="text-xs text-gray-500 mt-1">
+                      Поддерживаются любые типы файлов (макс. 10MB на файл)
+                    </p>
                   </label>
                 </div>
-                {attachments.length > 0 && (
+                
+                {/* Existing attachments */}
+                {!isCreateMode && existingAttachments.length > 0 && (
                   <div className="space-y-2 mt-3">
-                    {attachments.map((attachment) => (
+                    <p className="text-sm text-gray-600">Загруженные файлы:</p>
+                    {existingAttachments.map((attachment) => (
                       <div
                         key={attachment.id}
                         className="flex items-center justify-between p-3 bg-gray-50 rounded-lg"
@@ -715,15 +1242,63 @@ export function TaskModal({
                           <Paperclip className="w-4 h-4 text-gray-500" />
                           <div>
                             <p className="text-sm">{attachment.name}</p>
-                            <p className="text-xs text-gray-500">{attachment.size}</p>
+                            <p className="text-xs text-gray-500">
+                              {(attachment.size / 1024 / 1024).toFixed(2)} MB
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => window.open(attachment.url, '_blank')}
+                          >
+                            <Download className="w-4 h-4" />
+                          </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleDeleteExistingAttachment(attachment.id)}
+                            className="text-red-600 hover:text-red-700"
+                            disabled={isLoading}
+                          >
+                            <X className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Pending files */}
+                {pendingFiles.length > 0 && (
+                  <div className="space-y-2 mt-3">
+                    <p className="text-sm text-gray-600">
+                      {isCreateMode ? 'Файлы для загрузки:' : 'Новые файлы:'}
+                    </p>
+                    {pendingFiles.map((file, index) => (
+                      <div
+                        key={`pending-${index}`}
+                        className="flex items-center justify-between p-3 bg-blue-50 rounded-lg border border-blue-200"
+                      >
+                        <div className="flex items-center gap-3">
+                          <Paperclip className="w-4 h-4 text-blue-500" />
+                          <div>
+                            <p className="text-sm">{file.name}</p>
+                            <p className="text-xs text-gray-500">
+                              {(file.size / 1024 / 1024).toFixed(2)} MB
+                            </p>
                           </div>
                         </div>
                         <Button
                           type="button"
                           variant="ghost"
                           size="sm"
-                          onClick={() => removeAttachment(attachment.id)}
+                          onClick={() => removePendingFile(index)}
                           className="text-red-600 hover:text-red-700"
+                          disabled={isLoading || isUploadingFiles}
                         >
                           <X className="w-4 h-4" />
                         </Button>
@@ -744,15 +1319,23 @@ export function TaskModal({
                     if (isCreateMode) resetForm();
                   }}
                   className="flex-1"
+                  disabled={isLoading}
                 >
                   Отмена
                 </Button>
                 <Button
                   type="submit"
                   className="flex-1 bg-purple-600 hover:bg-purple-700"
-                  disabled={!title.trim() || !projectId}
+                  disabled={!title.trim() || !projectId || isLoading}
                 >
-                  {isCreateMode ? 'Создать задачу' : 'Сохранить изменения'}
+                  {isLoading ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      {isCreateMode ? 'Создание...' : 'Сохранение...'}
+                    </>
+                  ) : (
+                    <>{isCreateMode ? 'Создать задачу' : 'Сохранить изменения'}</>
+                  )}
                 </Button>
               </div>
             </form>

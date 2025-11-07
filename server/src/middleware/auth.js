@@ -1,63 +1,59 @@
-import { verifyToken } from '../utils/jwt.js';
-import User from '../models/User.js';
+const jwt = require('jsonwebtoken');
+const { User } = require('../models');
 
-/**
- * Middleware для проверки JWT токена
- */
-export const authenticate = async (req, res, next) => {
+const authMiddleware = async (req, res, next) => {
   try {
-    // Получение токена из заголовка
+    // Get token from header
     const authHeader = req.headers.authorization;
     
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return res.status(401).json({
         success: false,
-        message: 'Токен не предоставлен'
+        error: 'No token provided'
       });
     }
 
-    const token = authHeader.substring(7); // Убираем 'Bearer '
+    const token = authHeader.substring(7); // Remove 'Bearer ' prefix
 
-    // Верификация токена
-    const decoded = verifyToken(token);
-
-    // Получение пользователя из базы
-    const user = await User.findById(decoded.userId);
+    // Verify token
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    
+    // Get user from database
+    const user = await User.findByPk(decoded.userId, {
+      attributes: { exclude: ['password_hash'] }
+    });
 
     if (!user) {
       return res.status(401).json({
         success: false,
-        message: 'Пользователь не найден'
+        error: 'User not found'
       });
     }
 
-    if (user.status !== 'active') {
-      return res.status(401).json({
-        success: false,
-        message: 'Аккаунт не активирован'
-      });
-    }
-
-    // Добавление пользователя в request
+    // Attach user to request
     req.user = user;
     next();
   } catch (error) {
-    return res.status(401).json({
+    if (error.name === 'JsonWebTokenError') {
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid token'
+      });
+    }
+    
+    if (error.name === 'TokenExpiredError') {
+      return res.status(401).json({
+        success: false,
+        error: 'Token expired'
+      });
+    }
+
+    console.error('Auth middleware error:', error);
+    return res.status(500).json({
       success: false,
-      message: 'Недействительный токен'
+      error: 'Authentication failed'
     });
   }
 };
 
-/**
- * Middleware для проверки активности пользователя
- */
-export const checkUserStatus = async (req, res, next) => {
-  if (req.user.status === 'disabled') {
-    return res.status(403).json({
-      success: false,
-      message: 'Ваш аккаунт заблокирован'
-    });
-  }
-  next();
-};
+module.exports = authMiddleware;

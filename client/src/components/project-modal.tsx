@@ -11,10 +11,11 @@ import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Textarea } from './ui/textarea';
 import { Badge } from './ui/badge';
-import { X, Plus, Upload, Paperclip, Link as LinkIcon, Users, UserPlus } from 'lucide-react';
+import { X, Plus, Upload, Paperclip, Link as LinkIcon, Users, UserPlus, Loader2 } from 'lucide-react';
 import { Avatar, AvatarFallback } from './ui/avatar';
 import { Separator } from './ui/separator';
 import { toast } from 'sonner';
+import { useApp, type ProjectLink, type ProjectAttachment } from '../contexts/app-context';
 
 type ProjectModalMode = 'create' | 'edit';
 
@@ -78,34 +79,42 @@ export function ProjectModal({
   onSave,
   onManageMembers,
 }: ProjectModalProps) {
+  const { projects, createProject, updateProject } = useApp();
+  const [isLoading, setIsLoading] = React.useState(false);
+  
   const isEditMode = mode === 'edit';
-  const existingProject = projectId && isEditMode ? getProjectData(projectId) : null;
+  const existingProject = projectId && isEditMode ? projects.find(p => p.id === projectId) : null;
 
   // Form state
   const [name, setName] = React.useState(existingProject?.name || '');
   const [description, setDescription] = React.useState(existingProject?.description || '');
   const [selectedColor, setSelectedColor] = React.useState(existingProject?.color || 'purple');
-  const [links, setLinks] = React.useState<Array<{ id: string; name: string; url: string }>>(
+  const [links, setLinks] = React.useState<ProjectLink[]>(
     existingProject?.links || []
   );
   const [newLinkName, setNewLinkName] = React.useState('');
   const [newLinkUrl, setNewLinkUrl] = React.useState('');
-  const [selectedCategories, setSelectedCategories] = React.useState<string[]>(
-    existingProject?.categories || []
+  const [selectedCategories, setSelectedCategories] = React.useState<string[]>([]);
+  const [attachments, setAttachments] = React.useState<ProjectAttachment[]>(
+    existingProject?.attachments || []
   );
-  const [attachments, setAttachments] = React.useState<any[]>(existingProject?.attachments || []);
   const [errors, setErrors] = React.useState<Record<string, string>>({});
 
   React.useEffect(() => {
-    if (existingProject) {
-      setName(existingProject.name);
-      setDescription(existingProject.description);
-      setSelectedColor(existingProject.color);
-      setLinks(existingProject.links);
-      setSelectedCategories(existingProject.categories);
-      setAttachments(existingProject.attachments);
+    if (open && existingProject) {
+      // Загружаем данные существующего проекта
+      setName(existingProject.name || '');
+      setDescription(existingProject.description || '');
+      setSelectedColor(existingProject.color || 'purple');
+      setLinks(existingProject.links || []);
+      const categories = existingProject.category ? existingProject.category.split(', ').filter(Boolean) : [];
+      setSelectedCategories(categories);
+      setAttachments(existingProject.attachments || []);
+    } else if (open && !isEditMode) {
+      // Очищаем форму для создания нового проекта
+      resetForm();
     }
-  }, [existingProject]);
+  }, [open, existingProject, isEditMode]);
 
   const resetForm = () => {
     setName('');
@@ -128,7 +137,7 @@ export function ProjectModal({
     return Object.keys(newErrors).length === 0;
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (!validateForm()) {
@@ -136,26 +145,34 @@ export function ProjectModal({
       return;
     }
 
-    const projectData = {
-      id: existingProject?.id || `project-${Date.now()}`,
-      name,
-      description,
-      color: selectedColor,
-      links,
-      categories: selectedCategories,
-      attachments,
-    };
+    setIsLoading(true);
 
-    onSave?.(projectData);
+    try {
+      const projectData = {
+        name,
+        description,
+        color: selectedColor,
+        category: selectedCategories.join(', '),
+        status: isEditMode && existingProject?.status ? existingProject.status : 'active',
+        links: links.length > 0 ? links : undefined,
+        attachments: attachments.length > 0 ? attachments : undefined,
+      };
 
-    if (isEditMode) {
-      toast.success('Проект обновлён');
-    } else {
-      toast.success('Проект создан успешно');
+      if (isEditMode && existingProject) {
+        await updateProject(existingProject.id, projectData);
+        onSave?.(projectData);
+      } else {
+        await createProject(projectData);
+        onSave?.(projectData);
+      }
+
+      resetForm();
+      onOpenChange(false);
+    } catch (error) {
+      console.error('Project save error:', error);
+    } finally {
+      setIsLoading(false);
     }
-
-    onOpenChange(false);
-    if (!isEditMode) resetForm();
   };
 
   const addLink = () => {
@@ -485,15 +502,23 @@ export function ProjectModal({
                 if (!isEditMode) resetForm();
               }}
               className="flex-1"
+              disabled={isLoading}
             >
               Отмена
             </Button>
             <Button
               type="submit"
               className="flex-1 bg-green-600 hover:bg-green-700"
-              disabled={!name.trim()}
+              disabled={!name.trim() || isLoading}
             >
-              {isEditMode ? 'Сохранить изменения' : 'Создать проект'}
+              {isLoading ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  {isEditMode ? 'Сохранение...' : 'Создание...'}
+                </>
+              ) : (
+                <>{isEditMode ? 'Сохранить изменения' : 'Создать проект'}</>
+              )}
             </Button>
           </div>
         </form>

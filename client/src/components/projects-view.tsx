@@ -1,5 +1,5 @@
 import React from 'react';
-import { Plus, Search, MoreVertical, Users, Calendar, AlertCircle } from 'lucide-react';
+import { Plus, Search, MoreVertical, Users, Calendar, AlertCircle, Loader2, Archive, ArchiveRestore, Trash2 } from 'lucide-react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
@@ -17,124 +17,72 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from './ui/dropdown-menu';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from './ui/alert-dialog';
 import { ProjectModal } from './project-modal';
 import { ProjectAboutModal } from './project-about-modal';
 import { ProjectMembersModal } from './project-members-modal';
+import { useApp } from '../contexts/app-context';
+import { format } from 'date-fns';
+import { ru } from 'date-fns/locale';
 
-type Project = {
+type ProjectWithStats = {
   id: string;
   name: string;
   description: string;
   color: string;
-  role: 'owner' | 'member' | 'observer';
-  owner: string;
-  ownerShort: string;
+  userRole: 'owner' | 'collaborator' | 'member' | 'viewer';
+  members?: any[];
   totalTasks: number;
   overdueTasks: number;
+  tasksByStatus: {
+    todo: number;
+    in_progress: number;
+    review: number;
+    done: number;
+  };
   lastUpdated: string;
   isArchived: boolean;
-  isMine: boolean;
 };
 
-const mockProjects: Project[] = [
-  {
-    id: 'website',
-    name: 'Веб-сайт компании',
-    description: 'Разработка корпоративного веб-сайта',
-    color: 'bg-purple-500',
-    role: 'owner',
-    owner: 'Мария Иванова',
-    ownerShort: 'МИ',
-    totalTasks: 24,
-    overdueTasks: 2,
-    lastUpdated: '2 часа назад',
-    isArchived: false,
-    isMine: true,
-  },
-  {
-    id: 'backend',
-    name: 'Backend API',
-    description: 'Разработка REST API для мобильного приложения',
-    color: 'bg-green-500',
-    role: 'member',
-    owner: 'Александр Петров',
-    ownerShort: 'АП',
-    totalTasks: 18,
-    overdueTasks: 0,
-    lastUpdated: '5 часов назад',
-    isArchived: false,
-    isMine: false,
-  },
-  {
-    id: 'mobile',
-    name: 'Мобильное приложение',
-    description: 'iOS и Android приложение для клиентов',
-    color: 'bg-pink-500',
-    role: 'member',
-    owner: 'Евгений Смирнов',
-    ownerShort: 'ЕС',
-    totalTasks: 31,
-    overdueTasks: 5,
-    lastUpdated: '1 день назад',
-    isArchived: false,
-    isMine: false,
-  },
-  {
-    id: 'devops',
-    name: 'DevOps и инфраструктура',
-    description: 'Настройка CI/CD и облачной инфраструктуры',
-    color: 'bg-orange-500',
-    role: 'observer',
-    owner: 'Дмитрий Козлов',
-    ownerShort: 'ДК',
-    totalTasks: 12,
-    overdueTasks: 1,
-    lastUpdated: '3 дня назад',
-    isArchived: false,
-    isMine: false,
-  },
-  {
-    id: 'design',
-    name: 'Дизайн система',
-    description: 'Разработка единой дизайн-системы',
-    color: 'bg-blue-500',
-    role: 'owner',
-    owner: 'Мария Иванова',
-    ownerShort: 'МИ',
-    totalTasks: 15,
-    overdueTasks: 0,
-    lastUpdated: '1 неделю назад',
-    isArchived: false,
-    isMine: true,
-  },
-  {
-    id: 'marketing',
-    name: 'Маркетинг 2024',
-    description: 'Маркетинговые кампании и продвижение',
-    color: 'bg-red-500',
-    role: 'member',
-    owner: 'Александр Петров',
-    ownerShort: 'АП',
-    totalTasks: 8,
-    overdueTasks: 0,
-    lastUpdated: '2 недели назад',
-    isArchived: true,
-    isMine: false,
-  },
-];
+// Helper to map color string to Tailwind class
+const getColorClass = (color?: string) => {
+  const colorMap: Record<string, string> = {
+    purple: 'bg-purple-500',
+    green: 'bg-green-500',
+    pink: 'bg-pink-500',
+    orange: 'bg-orange-500',
+    blue: 'bg-blue-500',
+    red: 'bg-red-500',
+    yellow: 'bg-yellow-500',
+    indigo: 'bg-indigo-500',
+  };
+  return colorMap[color || ''] || 'bg-gray-500';
+};
 
-const roleLabels = {
+const roleLabels: Record<string, string> = {
   owner: 'Владелец',
+  collaborator: 'Участник с правами',
   member: 'Участник',
-  observer: 'Наблюдатель',
+  viewer: 'Наблюдатель',
 };
 
-const roleColors = {
+const roleColors: Record<string, string> = {
   owner: 'bg-purple-100 text-purple-700',
+  collaborator: 'bg-indigo-100 text-indigo-700',
   member: 'bg-blue-100 text-blue-700',
-  observer: 'bg-gray-100 text-gray-700',
+  viewer: 'bg-gray-100 text-gray-700',
 };
 
 type ProjectsViewProps = {
@@ -142,6 +90,7 @@ type ProjectsViewProps = {
 };
 
 export function ProjectsView({ onProjectClick }: ProjectsViewProps) {
+  const { projects, tasks, isLoading, deleteProject, updateProject, currentUser } = useApp();
   const [searchQuery, setSearchQuery] = React.useState('');
   const [typeFilter, setTypeFilter] = React.useState('all');
   const [statusFilter, setStatusFilter] = React.useState('active');
@@ -149,23 +98,64 @@ export function ProjectsView({ onProjectClick }: ProjectsViewProps) {
   const [editingProject, setEditingProject] = React.useState<string | null>(null);
   const [aboutProject, setAboutProject] = React.useState<string | null>(null);
   const [membersProject, setMembersProject] = React.useState<string | null>(null);
+  const [deleteConfirmProject, setDeleteConfirmProject] = React.useState<string | null>(null);
+  const [actionLoading, setActionLoading] = React.useState<string | null>(null);
 
-  const filteredProjects = React.useMemo(() => {
-    return mockProjects.filter((project) => {
-      // Поиск
-      if (searchQuery) {
-        const query = searchQuery.toLowerCase();
-        if (
-          !project.name.toLowerCase().includes(query) &&
-          !project.owner.toLowerCase().includes(query)
-        ) {
-          return false;
+  // Calculate project stats
+  const projectsWithStats = React.useMemo(() => {
+    return projects.map((project) => {
+      const projectTasks = tasks.filter((task) => task.projectId === project.id);
+      const totalTasks = projectTasks.length;
+      const overdueTasks = projectTasks.filter(
+        (task) => task.deadline && new Date(task.deadline) < new Date() && !task.completed
+      ).length;
+
+      // Разбивка задач по статусам
+      const tasksByStatus = {
+        todo: projectTasks.filter(t => t.status === 'todo').length,
+        in_progress: projectTasks.filter(t => t.status === 'in_progress').length,
+        review: projectTasks.filter(t => t.status === 'review').length,
+        done: projectTasks.filter(t => t.status === 'done' || t.completed).length,
+      };
+
+      // Определяем роль текущего пользователя в проекте
+      let userRole: 'owner' | 'collaborator' | 'member' | 'viewer' = 'viewer';
+      if (project.userId === currentUser?.id) {
+        userRole = 'owner';
+      } else if (project.members && currentUser?.id) {
+        const member = project.members.find((m: any) => 
+          m.userId === currentUser.id || 
+          m.id === currentUser.id || 
+          m.email === currentUser.email
+        );
+        if (member?.role) {
+          userRole = member.role as 'owner' | 'collaborator' | 'member' | 'viewer';
         }
       }
 
-      // Фильтр по типу
-      if (typeFilter === 'mine' && !project.isMine) return false;
-      if (typeFilter === 'invited' && project.isMine) return false;
+      return {
+        ...project,
+        totalTasks,
+        overdueTasks,
+        tasksByStatus,
+        userRole,
+        isArchived: project.status === 'archived',
+        lastUpdated: project.updatedAt
+          ? format(new Date(project.updatedAt), 'PPP', { locale: ru })
+          : 'Недавно',
+      };
+    });
+  }, [projects, tasks, currentUser]);
+
+  const filteredProjects = React.useMemo(() => {
+    return projectsWithStats.filter((project) => {
+      // Поиск
+      if (searchQuery) {
+        const query = searchQuery.toLowerCase();
+        if (!project.name.toLowerCase().includes(query)) {
+          return false;
+        }
+      }
 
       // Фильтр по статусу
       if (statusFilter === 'active' && project.isArchived) return false;
@@ -173,12 +163,40 @@ export function ProjectsView({ onProjectClick }: ProjectsViewProps) {
 
       return true;
     });
-  }, [searchQuery, typeFilter, statusFilter]);
+  }, [projectsWithStats, searchQuery, statusFilter]);
 
-  const handleProjectAction = (projectId: string, action: string) => {
+  const handleProjectAction = async (projectId: string, action: string) => {
     console.log(`Action ${action} on project ${projectId}`);
+    
     if (action === 'edit') {
       setEditingProject(projectId);
+    } else if (action === 'delete') {
+      setDeleteConfirmProject(projectId);
+    } else if (action === 'archive' || action === 'unarchive') {
+      setActionLoading(projectId);
+      try {
+        const project = projects.find(p => p.id === projectId);
+        const newStatus = project?.status === 'archived' ? 'active' : 'archived';
+        await updateProject(projectId, { status: newStatus });
+      } catch (error) {
+        console.error('Error archiving/unarchiving project:', error);
+      } finally {
+        setActionLoading(null);
+      }
+    }
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!deleteConfirmProject) return;
+    
+    setActionLoading(deleteConfirmProject);
+    try {
+      await deleteProject(deleteConfirmProject);
+      setDeleteConfirmProject(null);
+    } catch (error) {
+      console.error('Error deleting project:', error);
+    } finally {
+      setActionLoading(null);
     }
   };
 
@@ -189,7 +207,7 @@ export function ProjectsView({ onProjectClick }: ProjectsViewProps) {
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden">
       {/* Верхняя панель */}
-      <div className="border-b bg-white px-4 md:px-6 py-4">
+      <div className="border-b bg-white px-4 md:px-6 py-4 flex-shrink-0">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
           <div>
             <h1 className="text-gray-900 mb-1">Проекты</h1>
@@ -209,7 +227,7 @@ export function ProjectsView({ onProjectClick }: ProjectsViewProps) {
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
             <Input
-              placeholder="Поиск по названию или владельцу..."
+              placeholder="Поиск по названию или ��ладельцу..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="pl-10"
@@ -243,12 +261,17 @@ export function ProjectsView({ onProjectClick }: ProjectsViewProps) {
 
       {/* Список проектов */}
       <div className="flex-1 overflow-y-auto p-4 md:p-6 bg-gray-50">
-        {filteredProjects.length === 0 ? (
+        {isLoading ? (
+          <div className="flex flex-col items-center justify-center h-full">
+            <Loader2 className="w-8 h-8 animate-spin text-purple-600 mb-4" />
+            <p className="text-gray-600">Загрузка проектов...</p>
+          </div>
+        ) : filteredProjects.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center">
             <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mb-4">
               <Users className="w-8 h-8 text-gray-400" />
             </div>
-            {searchQuery || typeFilter !== 'all' || statusFilter !== 'active' ? (
+            {searchQuery || statusFilter !== 'active' ? (
               <>
                 <h3 className="text-gray-900 mb-2">Проекты не найдены</h3>
                 <p className="text-gray-600 mb-4">
@@ -286,19 +309,32 @@ export function ProjectsView({ onProjectClick }: ProjectsViewProps) {
             {filteredProjects.map((project) => (
               <Card
                 key={project.id}
-                className="cursor-pointer hover:shadow-lg transition-all duration-200 overflow-hidden group"
+                className={`cursor-pointer hover:shadow-lg transition-all duration-200 overflow-hidden group relative ${
+                  project.isArchived ? 'opacity-70 bg-gray-50' : ''
+                } ${actionLoading === project.id ? 'pointer-events-none' : ''}`}
                 onClick={() => handleProjectClick(project.id)}
               >
+                {/* Индикатор загрузки */}
+                {actionLoading === project.id && (
+                  <div className="absolute inset-0 bg-white/50 backdrop-blur-sm flex items-center justify-center z-10">
+                    <Loader2 className="w-6 h-6 animate-spin text-purple-600" />
+                  </div>
+                )}
                 {/* Цветная полоса */}
-                <div className={`h-2 ${project.color}`} />
+                <div className={`h-2 ${project.isArchived ? 'bg-gray-400' : getColorClass(project.color)}`} />
 
                 <CardHeader className="pb-3">
                   <div className="flex items-start justify-between gap-2">
                     <div className="flex-1 min-w-0">
-                      <h3 className="truncate mb-2">{project.name}</h3>
-                      <Badge variant="outline" className={roleColors[project.role]}>
-                        {roleLabels[project.role]}
-                      </Badge>
+                      <div className="flex items-center gap-2">
+                        <h3 className="truncate">{project.name}</h3>
+                        {project.isArchived && (
+                          <Badge variant="outline" className="bg-gray-100 text-gray-600 text-xs">
+                            <Archive className="w-3 h-3 mr-1" />
+                            Архив
+                          </Badge>
+                        )}
+                      </div>
                     </div>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
@@ -306,76 +342,132 @@ export function ProjectsView({ onProjectClick }: ProjectsViewProps) {
                           <MoreVertical className="w-4 h-4" />
                         </Button>
                       </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem onClick={() => handleProjectClick(project.id)}>
+                      <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+                        <DropdownMenuItem onClick={(e) => { e.stopPropagation(); handleProjectClick(project.id); }}>
                           Открыть проект
                         </DropdownMenuItem>
                         <DropdownMenuItem onClick={(e) => { e.stopPropagation(); setAboutProject(project.id); }}>
                           О проекте
                         </DropdownMenuItem>
                         <DropdownMenuItem onClick={(e) => { e.stopPropagation(); setMembersProject(project.id); }}>
+                          <Users className="w-4 h-4 mr-2" />
                           Участники
                         </DropdownMenuItem>
-                        {project.role === 'owner' && (
-                          <>
-                            <DropdownMenuItem onClick={() => handleProjectAction(project.id, 'edit')}>
-                              Редактировать
-                            </DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => handleProjectAction(project.id, 'archive')}>
-                              {project.isArchived ? 'Восстановить' : 'Архивировать'}
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              onClick={() => handleProjectAction(project.id, 'delete')}
-                              className="text-red-600"
-                            >
-                              Удалить
-                            </DropdownMenuItem>
-                          </>
-                        )}
-                        {project.role !== 'owner' && (
-                          <DropdownMenuItem
-                            onClick={() => handleProjectAction(project.id, 'leave')}
-                            className="text-red-600"
-                          >
-                            Выйти из проекта
-                          </DropdownMenuItem>
-                        )}
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem 
+                          onClick={(e) => { e.stopPropagation(); handleProjectAction(project.id, 'edit'); }}
+                          disabled={actionLoading === project.id}
+                        >
+                          Редактировать
+                        </DropdownMenuItem>
+                        <DropdownMenuItem 
+                          onClick={(e) => { e.stopPropagation(); handleProjectAction(project.id, project.isArchived ? 'unarchive' : 'archive'); }}
+                          disabled={actionLoading === project.id}
+                        >
+                          {project.isArchived ? (
+                            <>
+                              <ArchiveRestore className="w-4 h-4 mr-2" />
+                              Восстановить
+                            </>
+                          ) : (
+                            <>
+                              <Archive className="w-4 h-4 mr-2" />
+                              Архивировать
+                            </>
+                          )}
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          onClick={(e) => { e.stopPropagation(); handleProjectAction(project.id, 'delete'); }}
+                          className="text-red-600 focus:text-red-600"
+                          disabled={actionLoading === project.id}
+                        >
+                          <Trash2 className="w-4 h-4 mr-2" />
+                          Удалить
+                        </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </div>
                 </CardHeader>
 
                 <CardContent className="space-y-3">
-                  <p className="text-sm text-gray-600 line-clamp-2">{project.description}</p>
+                  <p className="text-sm text-gray-600 line-clamp-2">
+                    {project.description || 'Нет описания'}
+                  </p>
 
-                  {/* Владелец */}
-                  <div className="flex items-center gap-2 text-sm">
-                    <Avatar className="w-6 h-6">
-                      <AvatarFallback className="text-xs bg-purple-100 text-purple-600">
-                        {project.ownerShort}
-                      </AvatarFallback>
-                    </Avatar>
-                    <span className="text-gray-600">{project.owner}</span>
+                  {/* Роль пользователя */}
+                  <div>
+                    <Badge variant="outline" className={roleColors[project.userRole]}>
+                      {roleLabels[project.userRole]}
+                    </Badge>
                   </div>
 
-                  {/* Статистика */}
-                  <div className="flex items-center justify-between text-sm pt-2 border-t">
-                    <div className="flex items-center gap-4">
-                      <div className="flex items-center gap-1">
-                        <Users className="w-4 h-4 text-gray-400" />
-                        <span className="text-gray-600">{project.totalTasks}</span>
+                  {/* Участники */}
+                  {project.members && project.members.length > 0 && (
+                    <div className="flex items-center gap-2">
+                      <div className="flex -space-x-2">
+                        {project.members.slice(0, 4).map((member: any, idx: number) => (
+                          <Avatar key={idx} className="w-7 h-7 border-2 border-white">
+                            <AvatarFallback className="text-xs">
+                              {member.name?.split(' ').map((n: string) => n[0]).join('') || member.email?.[0]?.toUpperCase() || '?'}
+                            </AvatarFallback>
+                          </Avatar>
+                        ))}
+                        {project.members.length > 4 && (
+                          <div className="w-7 h-7 rounded-full bg-gray-100 border-2 border-white flex items-center justify-center">
+                            <span className="text-xs text-gray-600">+{project.members.length - 4}</span>
+                          </div>
+                        )}
+                      </div>
+                      <span className="text-xs text-gray-500">
+                        {project.members.length} {project.members.length === 1 ? 'участник' : project.members.length < 5 ? 'участника' : 'участников'}
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Статистика задач по статусам */}
+                  <div className="space-y-2 pt-2 border-t">
+                    <div className="flex items-center justify-between text-xs">
+                      <div className="flex items-center gap-4">
+                        {project.tasksByStatus.todo > 0 && (
+                          <div className="flex items-center gap-1">
+                            <div className="w-2 h-2 rounded-full bg-gray-400" />
+                            <span className="text-gray-600">{project.tasksByStatus.todo} новых</span>
+                          </div>
+                        )}
+                        {project.tasksByStatus.in_progress > 0 && (
+                          <div className="flex items-center gap-1">
+                            <div className="w-2 h-2 rounded-full bg-blue-500" />
+                            <span className="text-gray-600">{project.tasksByStatus.in_progress} в работе</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between text-xs">
+                      <div className="flex items-center gap-4">
+                        {project.tasksByStatus.review > 0 && (
+                          <div className="flex items-center gap-1">
+                            <div className="w-2 h-2 rounded-full bg-orange-500" />
+                            <span className="text-gray-600">{project.tasksByStatus.review} на проверке</span>
+                          </div>
+                        )}
+                        {project.tasksByStatus.done > 0 && (
+                          <div className="flex items-center gap-1">
+                            <div className="w-2 h-2 rounded-full bg-green-500" />
+                            <span className="text-gray-600">{project.tasksByStatus.done} завершено</span>
+                          </div>
+                        )}
                       </div>
                       {project.overdueTasks > 0 && (
                         <div className="flex items-center gap-1 text-red-600">
-                          <AlertCircle className="w-4 h-4" />
-                          <span>{project.overdueTasks}</span>
+                          <AlertCircle className="w-3 h-3" />
+                          <span>{project.overdueTasks} просрочено</span>
                         </div>
                       )}
                     </div>
-                    <div className="flex items-center gap-1 text-gray-500">
-                      <Calendar className="w-4 h-4" />
-                      <span className="text-xs">{project.lastUpdated}</span>
-                    </div>
+                    {project.totalTasks === 0 && (
+                      <p className="text-xs text-gray-500">Нет задач</p>
+                    )}
                   </div>
                 </CardContent>
               </Card>
@@ -427,11 +519,42 @@ export function ProjectsView({ onProjectClick }: ProjectsViewProps) {
           open={!!membersProject}
           onOpenChange={(open) => !open && setMembersProject(null)}
           projectId={membersProject}
-          projectName={mockProjects.find((p) => p.id === membersProject)?.name || ''}
-          projectColor={mockProjects.find((p) => p.id === membersProject)?.color || 'bg-purple-500'}
+          projectName={projects.find((p) => p.id === membersProject)?.name || ''}
+          projectColor={projects.find((p) => p.id === membersProject)?.color || 'purple'}
           currentUserRole="owner"
         />
       )}
+
+      {/* Диалоговое окно подтверждения удаления */}
+      <AlertDialog open={!!deleteConfirmProject} onOpenChange={(open) => !open && setDeleteConfirmProject(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Вы уверены?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Это действие нельзя отменить. Проект "{projects.find((p) => p.id === deleteConfirmProject)?.name}" и все связанные с ним задачи будут безвозвратно удалены.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={actionLoading === deleteConfirmProject}>
+              Отмена
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDeleteConfirm}
+              disabled={actionLoading === deleteConfirmProject}
+              className="bg-red-600 hover:bg-red-700"
+            >
+              {actionLoading === deleteConfirmProject ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Удаление...
+                </>
+              ) : (
+                'Удалить проект'
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

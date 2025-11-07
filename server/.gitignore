@@ -1,5 +1,6 @@
 # Dependencies
 node_modules/
+package-lock.json
 
 # Environment variables
 .env
@@ -12,7 +13,7 @@ logs/
 *.log
 npm-debug.log*
 
-# OS files
+# OS
 .DS_Store
 Thumbs.db
 
@@ -21,3 +22,4 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+*~

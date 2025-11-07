@@ -1,148 +1,126 @@
-import User from '../models/User.js';
-import { generateTokenPair, verifyToken } from '../utils/jwt.js';
-import { sendVerificationEmail, sendPasswordResetEmail } from '../utils/email.js';
-import crypto from 'crypto';
+const jwt = require('jsonwebtoken');
+const { User } = require('../models');
+const path = require('path');
+const fs = require('fs').promises;
 
-/**
- * Регистрация нового пользователя
- */
-export const register = async (req, res, next) => {
+// Generate JWT token
+const generateToken = (userId) => {
+  return jwt.sign(
+    { userId },
+    process.env.JWT_SECRET,
+    { expiresIn: process.env.JWT_EXPIRES_IN || '24h' }
+  );
+};
+
+// Sign up
+exports.signup = async (req, res, next) => {
   try {
-    const { name, email, password } = req.body;
+    const { email, password, name } = req.body;
 
-    // Проверка существования пользователя
-    const existingUser = await User.findOne({ email });
+    // Validate input
+    if (!email || !password || !name) {
+      return res.status(400).json({
+        success: false,
+        error: 'Email, password, and name are required'
+      });
+    }
+
+    // Check if user exists
+    const existingUser = await User.findOne({ where: { email } });
     if (existingUser) {
       return res.status(400).json({
         success: false,
-        message: 'Пользователь с таким email уже существует'
+        error: 'User already exists'
       });
     }
 
-    // Создание токена подтверждения email
-    const emailVerificationToken = crypto.randomBytes(32).toString('hex');
-    const emailVerificationExpires = new Date(Date.now() + 72 * 60 * 60 * 1000); // 72 часа
+    // Hash password
+    const password_hash = await User.hashPassword(password);
 
-    // Создание пользователя
+    // Create user
     const user = await User.create({
-      name,
       email,
-      password,
-      emailVerificationToken,
-      emailVerificationExpires
+      password_hash,
+      name
     });
 
-    // Отправка email подтверждения
-    try {
-      await sendVerificationEmail(email, name, emailVerificationToken);
-    } catch (emailError) {
-      console.error('Email sending error:', emailError);
-      // Продолжаем даже если email не отправился
-    }
+    // Generate token
+    const token = generateToken(user.id);
 
     res.status(201).json({
       success: true,
-      message: 'Регистрация успешна. Проверьте ваш email для подтверждения аккаунта.',
-      data: {
-        userId: user._id,
-        email: user.email
-      }
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        avatar_url: user.avatar_url
+      },
+      token
     });
   } catch (error) {
     next(error);
   }
 };
 
-/**
- * Подтверждение email
- */
-export const verifyEmail = async (req, res, next) => {
-  try {
-    const { token } = req.body;
-
-    const user = await User.findOne({
-      emailVerificationToken: token,
-      emailVerificationExpires: { $gt: Date.now() }
-    }).select('+emailVerificationToken +emailVerificationExpires');
-
-    if (!user) {
-      return res.status(400).json({
-        success: false,
-        message: 'Недействительный или истекший токен подтверждения'
-      });
-    }
-
-    // Активация пользователя
-    user.status = 'active';
-    user.emailVerificationToken = undefined;
-    user.emailVerificationExpires = undefined;
-    await user.save();
-
-    res.json({
-      success: true,
-      message: 'Email успешно подтвержден. Теперь вы можете войти в систему.'
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-/**
- * Вход в систему
- */
-export const login = async (req, res, next) => {
+// Login
+exports.login = async (req, res, next) => {
   try {
     const { email, password } = req.body;
 
-    // Поиск пользователя с паролем
-    const user = await User.findOne({ email }).select('+password');
+    // Validate input
+    if (!email || !password) {
+      return res.status(400).json({
+        success: false,
+        error: 'Email and password are required'
+      });
+    }
 
+    // Find user
+    const user = await User.findOne({ where: { email } });
     if (!user) {
       return res.status(401).json({
         success: false,
-        message: 'Неверный email или пароль'
+        error: 'Invalid credentials'
       });
     }
 
-    // Проверка статуса
-    if (user.status === 'pending') {
+    // Check password
+    const isValidPassword = await user.checkPassword(password);
+    if (!isValidPassword) {
       return res.status(401).json({
         success: false,
-        message: 'Пожалуйста, подтвердите ваш email перед входом'
+        error: 'Invalid credentials'
       });
     }
 
-    if (user.status === 'disabled') {
-      return res.status(401).json({
-        success: false,
-        message: 'Ваш аккаунт заблокирован'
-      });
-    }
-
-    // Проверка пароля
-    const isPasswordValid = await user.comparePassword(password);
-    if (!isPasswordValid) {
-      return res.status(401).json({
-        success: false,
-        message: 'Неверный email или пароль'
-      });
-    }
-
-    // Генерация токенов
-    const { accessToken, refreshToken } = generateTokenPair(user._id);
-
-    // Сохранение refresh токена
-    user.refreshTokens.push({ token: refreshToken });
-    user.lastLogin = new Date();
-    await user.save();
+    // Generate token
+    const token = generateToken(user.id);
 
     res.json({
       success: true,
-      message: 'Вход выполнен успешно',
-      data: {
-        user: user.toPublicProfile(),
-        accessToken,
-        refreshToken
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        avatar_url: user.avatar_url
+      },
+      token
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Get current user
+exports.getCurrentUser = async (req, res, next) => {
+  try {
+    res.json({
+      success: true,
+      user: {
+        id: req.user.id,
+        email: req.user.email,
+        name: req.user.name,
+        avatar_url: req.user.avatar_url
       }
     });
   } catch (error) {
@@ -150,159 +128,87 @@ export const login = async (req, res, next) => {
   }
 };
 
-/**
- * Обновление access токена через refresh токен
- */
-export const refreshToken = async (req, res, next) => {
+// Update profile
+exports.updateProfile = async (req, res, next) => {
   try {
-    const { refreshToken } = req.body;
+    const { name, email } = req.body;
+    const updates = {};
 
-    if (!refreshToken) {
+    if (name) updates.name = name;
+    if (email) updates.email = email;
+
+    await req.user.update(updates);
+
+    res.json({
+      success: true,
+      user: {
+        id: req.user.id,
+        email: req.user.email,
+        name: req.user.name,
+        avatar_url: req.user.avatar_url
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// Upload avatar
+exports.uploadAvatar = async (req, res, next) => {
+  try {
+    if (!req.file) {
       return res.status(400).json({
         success: false,
-        message: 'Refresh токен не предоставлен'
+        error: 'No file uploaded'
       });
     }
 
-    // Верификация токена
-    const decoded = verifyToken(refreshToken);
+    // Delete old avatar if exists
+    if (req.user.avatar_url) {
+      const oldAvatarPath = path.join(__dirname, '../../', req.user.avatar_url);
+      try {
+        await fs.unlink(oldAvatarPath);
+      } catch (err) {
+        // Ignore error if file doesn't exist
+      }
+    }
 
-    // Поиск пользователя с этим refresh токеном
-    const user = await User.findOne({
-      _id: decoded.userId,
-      'refreshTokens.token': refreshToken
+    // Update user with new avatar URL
+    const avatar_url = `/uploads/avatars/${req.file.filename}`;
+    await req.user.update({ avatar_url });
+
+    res.json({
+      success: true,
+      avatar_url
     });
+  } catch (error) {
+    next(error);
+  }
+};
 
-    if (!user) {
-      return res.status(401).json({
+// Delete avatar
+exports.deleteAvatar = async (req, res, next) => {
+  try {
+    if (!req.user.avatar_url) {
+      return res.status(400).json({
         success: false,
-        message: 'Недействительный refresh токен'
+        error: 'No avatar to delete'
       });
     }
 
-    // Генерация новой пары токенов
-    const tokens = generateTokenPair(user._id);
-
-    // Удаление старого refresh токена и добавление нового
-    user.refreshTokens = user.refreshTokens.filter(rt => rt.token !== refreshToken);
-    user.refreshTokens.push({ token: tokens.refreshToken });
-    await user.save();
-
-    res.json({
-      success: true,
-      data: tokens
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-/**
- * Выход из системы
- */
-export const logout = async (req, res, next) => {
-  try {
-    const { refreshToken } = req.body;
-
-    if (refreshToken) {
-      // Удаление refresh токена из базы
-      await User.updateOne(
-        { _id: req.user._id },
-        { $pull: { refreshTokens: { token: refreshToken } } }
-      );
-    }
-
-    res.json({
-      success: true,
-      message: 'Выход выполнен успешно'
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-/**
- * Запрос на восстановление пароля
- */
-export const forgotPassword = async (req, res, next) => {
-  try {
-    const { email } = req.body;
-
-    const user = await User.findOne({ email });
-
-    if (!user) {
-      // Не сообщаем, существует ли пользователь (безопасность)
-      return res.json({
-        success: true,
-        message: 'Если пользователь с таким email существует, письмо для восстановления пароля было отправлено'
-      });
-    }
-
-    // Генерация токена восстановления
-    const resetToken = crypto.randomBytes(32).toString('hex');
-    user.passwordResetToken = resetToken;
-    user.passwordResetExpires = new Date(Date.now() + 60 * 60 * 1000); // 1 час
-    await user.save();
-
-    // Отправка email
+    // Delete file
+    const avatarPath = path.join(__dirname, '../../', req.user.avatar_url);
     try {
-      await sendPasswordResetEmail(email, user.name, resetToken);
-    } catch (emailError) {
-      console.error('Email sending error:', emailError);
+      await fs.unlink(avatarPath);
+    } catch (err) {
+      // Ignore error if file doesn't exist
     }
 
-    res.json({
-      success: true,
-      message: 'Если пользователь с таким email существует, письмо для восстановления пароля было отправлено'
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-/**
- * Сброс пароля
- */
-export const resetPassword = async (req, res, next) => {
-  try {
-    const { token, newPassword } = req.body;
-
-    const user = await User.findOne({
-      passwordResetToken: token,
-      passwordResetExpires: { $gt: Date.now() }
-    }).select('+passwordResetToken +passwordResetExpires');
-
-    if (!user) {
-      return res.status(400).json({
-        success: false,
-        message: 'Недействительный или истекший токен восстановления'
-      });
-    }
-
-    // Установка нового пароля
-    user.password = newPassword;
-    user.passwordResetToken = undefined;
-    user.passwordResetExpires = undefined;
-    user.refreshTokens = []; // Очистка всех refresh токенов
-    await user.save();
+    // Update user
+    await req.user.update({ avatar_url: null });
 
     res.json({
-      success: true,
-      message: 'Пароль успешно изменен'
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-/**
- * Получение текущего пользователя
- */
-export const getCurrentUser = async (req, res, next) => {
-  try {
-    res.json({
-      success: true,
-      data: req.user.toPublicProfile()
+      success: true
     });
   } catch (error) {
     next(error);

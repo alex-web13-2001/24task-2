@@ -1,42 +1,33 @@
-import mongoose from 'mongoose';
+const { DataTypes } = require('sequelize');
+const { sequelize } = require('../config/database');
 
-const categorySchema = new mongoose.Schema({
-  title: {
-    type: String,
-    required: [true, 'Название категории обязательно'],
-    trim: true,
-    unique: true,
-    minlength: [2, 'Название должно содержать минимум 2 символа'],
-    maxlength: [50, 'Название не должно превышать 50 символов']
+const Category = sequelize.define('Category', {
+  id: {
+    type: DataTypes.UUID,
+    defaultValue: DataTypes.UUIDV4,
+    primaryKey: true
+  },
+  name: {
+    type: DataTypes.STRING(255),
+    allowNull: false
   },
   color: {
-    type: String,
-    required: [true, 'Цвет категории обязателен'],
-    match: [/^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/, 'Пожалуйста, введите корректный HEX цвет'],
-    default: '#3B82F6'
+    type: DataTypes.STRING(50),
+    allowNull: true
   },
-  description: {
-    type: String,
-    trim: true,
-    maxlength: [200, 'Описание не должно превышать 200 символов']
+  user_id: {
+    type: DataTypes.UUID,
+    allowNull: false,
+    references: {
+      model: 'users',
+      key: 'id'
+    },
+    onDelete: 'CASCADE'
   }
 }, {
+  tableName: 'categories',
   timestamps: true,
-  toJSON: { virtuals: true },
-  toObject: { virtuals: true }
+  updatedAt: false
 });
 
-// Индексы
-categorySchema.index({ title: 1 });
-
-// Виртуальное поле для подсчета использований в задачах
-categorySchema.virtual('usageCount', {
-  ref: 'Task',
-  localField: '_id',
-  foreignField: 'categoryId',
-  count: true
-});
-
-const Category = mongoose.model('Category', categorySchema);
-
-export default Category;
+module.exports = Category;

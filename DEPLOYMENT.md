@@ -1,200 +1,292 @@
-# Инструкция по развертыванию 24Task на сервере
+# Инструкция по развертыванию T24 Task Manager
 
-## Предварительные требования
+Это подробное руководство по развертыванию приложения T24 Task Manager на вашем собственном сервере.
 
-- Сервер с Ubuntu 20.04+ или другой Linux дистрибутив
-- Node.js 22+ установлен
-- MongoDB 7.0+ установлен (или доступ к MongoDB Atlas)
-- Nginx установлен
-- Доменное имя настроено на ваш сервер
-- SSL сертификат (рекомендуется Let's Encrypt)
+## Требования к серверу
 
-## Шаг 1: Клонирование репозитория
+### Минимальные требования
+- **OS:** Ubuntu 20.04+ / Debian 11+ / CentOS 8+
+- **RAM:** 2GB (рекомендуется 4GB)
+- **Disk:** 20GB свободного места
+- **CPU:** 2 ядра (рекомендуется 4)
+- **Network:** Публичный IP адрес
+
+### Необходимое ПО
+- Docker 20.10+
+- Docker Compose 2.0+
+- Git
+- Nginx (опционально, для reverse proxy)
+- Certbot (опционально, для SSL)
+
+## Установка Docker
+
+### Ubuntu/Debian
 
 ```bash
-# Подключитесь к серверу по SSH
-ssh user@your-server.com
+# Обновление пакетов
+sudo apt update && sudo apt upgrade -y
 
-# Клонируйте репозиторий
-cd /var/www
+# Установка зависимостей
+sudo apt install -y apt-transport-https ca-certificates curl software-properties-common
+
+# Добавление GPG ключа Docker
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+
+# Добавление репозитория Docker
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# Установка Docker
+sudo apt update
+sudo apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+
+# Добавление пользователя в группу docker
+sudo usermod -aG docker $USER
+
+# Перелогиньтесь для применения изменений
+```
+
+### CentOS/RHEL
+
+```bash
+# Установка зависимостей
+sudo yum install -y yum-utils
+
+# Добавление репозитория Docker
+sudo yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+
+# Установка Docker
+sudo yum install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+
+# Запуск Docker
+sudo systemctl start docker
+sudo systemctl enable docker
+
+# Добавление пользователя в группу docker
+sudo usermod -aG docker $USER
+```
+
+### Проверка установки
+
+```bash
+docker --version
+docker compose version
+```
+
+## Развертывание приложения
+
+### Шаг 1: Клонирование репозитория
+
+```bash
+# Клонирование
 git clone https://github.com/alex-web13-2001/24task-2.git
 cd 24task-2
 ```
 
-## Шаг 2: Настройка Backend
+### Шаг 2: Настройка переменных окружения
+
+#### Backend (.env)
 
 ```bash
 cd server
-
-# Установка зависимостей
-npm install --production
-
-# Создание .env файла
 cp .env.example .env
 nano .env
 ```
 
-### Настройка .env файла:
+Отредактируйте следующие переменные:
 
 ```env
 NODE_ENV=production
-PORT=5000
+PORT=3000
 
-# MongoDB - используйте ваши реальные данные
-MONGODB_URI=mongodb://localhost:27017/24task
-# Или MongoDB Atlas:
-# MONGODB_URI=mongodb+srv://username:password@cluster.mongodb.net/24task
+# Database - измените пароль!
+DB_HOST=postgres
+DB_PORT=5432
+DB_NAME=taskmanager
+DB_USER=postgres
+DB_PASSWORD=ВАШ_НАДЕЖНЫЙ_ПАРОЛЬ
 
-# JWT - ОБЯЗАТЕЛЬНО смените на случайную строку!
-JWT_SECRET=ваш-очень-секретный-ключ-минимум-32-символа
-JWT_ACCESS_EXPIRATION=15m
-JWT_REFRESH_EXPIRATION=7d
+# JWT - ОБЯЗАТЕЛЬНО измените на случайную строку!
+JWT_SECRET=сгенерируйте-длинную-случайную-строку-минимум-32-символа
+JWT_EXPIRES_IN=24h
 
-# Email - настройте SMTP
-EMAIL_HOST=smtp.gmail.com
-EMAIL_PORT=587
-EMAIL_SECURE=false
-EMAIL_USER=your-email@gmail.com
-EMAIL_PASSWORD=your-app-password
-EMAIL_FROM=24Task <noreply@yourdomain.com>
-
-# Frontend URL - ваш домен
-FRONTEND_URL=https://yourdomain.com
-
-# CORS - ваш домен
+# CORS - укажите ваш домен
 CORS_ORIGIN=https://yourdomain.com
 
-# Файлы
-MAX_FILE_SIZE=104857600
-UPLOAD_PATH=./uploads
+# File Upload
+UPLOAD_DIR=./uploads
+MAX_FILE_SIZE=10485760
+
+# Rate Limiting
+RATE_LIMIT_WINDOW_MS=900000
+RATE_LIMIT_MAX_REQUESTS=100
 ```
 
-### Генерация секретного ключа JWT:
-
+**Генерация JWT_SECRET:**
 ```bash
-# Генерация случайного ключа
-node -e "console.log(require('crypto').randomBytes(64).toString('hex'))"
+# Linux/Mac
+openssl rand -base64 32
+
+# Или
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 ```
 
-## Шаг 3: Настройка Frontend
+#### Frontend (.env)
 
 ```bash
 cd ../client
-
-# Установка зависимостей
-npm install
-
-# Создание .env файла
 cp .env.example .env
 nano .env
 ```
 
-### Настройка .env файла:
-
 ```env
+# Для production укажите ваш домен
 VITE_API_URL=https://yourdomain.com/api
-VITE_SOCKET_URL=https://yourdomain.com
 ```
 
-### Сборка frontend:
+### Шаг 3: Настройка Docker Compose
 
 ```bash
-npm run build
+cd ..
+nano docker-compose.yml
 ```
 
-## Шаг 4: Установка PM2 для управления процессами
+Измените следующие параметры:
+
+```yaml
+services:
+  postgres:
+    environment:
+      POSTGRES_PASSWORD: ВАШ_НАДЕЖНЫЙ_ПАРОЛЬ  # Тот же что в .env
+
+  backend:
+    environment:
+      DB_PASSWORD: ВАШ_НАДЕЖНЫЙ_ПАРОЛЬ  # Тот же что выше
+      JWT_SECRET: ваш-jwt-secret-из-env
+      CORS_ORIGIN: https://yourdomain.com
+```
+
+### Шаг 4: Запуск приложения
 
 ```bash
-# Установка PM2 глобально
-npm install -g pm2
+# Сборка и запуск всех сервисов
+docker compose up -d --build
 
-# Запуск backend
-cd /var/www/24task-2/server
-pm2 start src/server.js --name 24task-server
+# Проверка статуса
+docker compose ps
 
-# Запуск frontend (статический сервер)
-cd /var/www/24task-2/client
-pm2 serve dist 3000 --name 24task-client --spa
-
-# Сохранение конфигурации PM2
-pm2 save
-
-# Автозапуск PM2 при перезагрузке сервера
-pm2 startup
-# Выполните команду, которую выдаст PM2
+# Просмотр логов
+docker compose logs -f
 ```
 
-## Шаг 5: Настройка Nginx
+### Шаг 5: Проверка работоспособности
 
 ```bash
-# Создание конфигурации Nginx
-sudo nano /etc/nginx/sites-available/24task
+# Проверка backend
+curl http://localhost:3000/health
+
+# Проверка frontend
+curl http://localhost
 ```
 
-### Конфигурация Nginx (HTTP):
+## Настройка Nginx Reverse Proxy
+
+### Установка Nginx
+
+```bash
+sudo apt install -y nginx
+```
+
+### Конфигурация
+
+Создайте файл конфигурации:
+
+```bash
+sudo nano /etc/nginx/sites-available/t24-task-manager
+```
+
+Добавьте следующую конфигурацию:
 
 ```nginx
+# HTTP -> HTTPS redirect
 server {
     listen 80;
+    listen [::]:80;
+    server_name yourdomain.com www.yourdomain.com;
+    
+    # Для Let's Encrypt
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+    
+    location / {
+        return 301 https://$server_name$request_uri;
+    }
+}
+
+# HTTPS
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
     server_name yourdomain.com www.yourdomain.com;
 
-    # Логи
-    access_log /var/log/nginx/24task-access.log;
-    error_log /var/log/nginx/24task-error.log;
+    # SSL certificates (будут созданы Let's Encrypt)
+    ssl_certificate /etc/letsencrypt/live/yourdomain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/yourdomain.com/privkey.pem;
+    
+    # SSL настройки
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+    
+    # Security headers
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
 
-    # Frontend (React SPA)
+    # Frontend
     location / {
-        proxy_pass http://localhost:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
+        proxy_pass http://localhost:80;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_cache_bypass $http_upgrade;
     }
 
     # Backend API
     location /api {
-        proxy_pass http://localhost:5000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
+        proxy_pass http://localhost:3000;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_cache_bypass $http_upgrade;
-    }
-
-    # Socket.IO для real-time обновлений
-    location /socket.io {
-        proxy_pass http://localhost:5000;
+        
+        # WebSocket support (если потребуется)
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_cache_bypass $http_upgrade;
+        proxy_set_header Connection "upgrade";
     }
 
-    # Загруженные файлы
+    # Uploads
     location /uploads {
-        alias /var/www/24task-2/server/uploads;
+        proxy_pass http://localhost:3000/uploads;
+        proxy_set_header Host $host;
+        
+        # Кеширование статики
         expires 1y;
         add_header Cache-Control "public, immutable";
     }
+
+    # Limits
+    client_max_body_size 10M;
 }
 ```
 
-### Активация конфигурации:
+### Активация конфигурации
 
 ```bash
 # Создание символической ссылки
-sudo ln -s /etc/nginx/sites-available/24task /etc/nginx/sites-enabled/
+sudo ln -s /etc/nginx/sites-available/t24-task-manager /etc/nginx/sites-enabled/
 
 # Проверка конфигурации
 sudo nginx -t
@@ -203,216 +295,325 @@ sudo nginx -t
 sudo systemctl restart nginx
 ```
 
-## Шаг 6: Установка SSL сертификата (Let's Encrypt)
+## Настройка SSL с Let's Encrypt
+
+### Установка Certbot
 
 ```bash
-# Установка Certbot
-sudo apt update
-sudo apt install certbot python3-certbot-nginx
-
-# Получение сертификата
-sudo certbot --nginx -d yourdomain.com -d www.yourdomain.com
-
-# Certbot автоматически настроит HTTPS
+sudo apt install -y certbot python3-certbot-nginx
 ```
 
-После установки SSL, Nginx конфигурация будет автоматически обновлена для HTTPS.
-
-## Шаг 7: Настройка MongoDB
-
-### Локальная MongoDB:
+### Получение сертификата
 
 ```bash
-# Установка MongoDB
-wget -qO - https://www.mongodb.org/static/pgp/server-7.0.asc | sudo apt-key add -
-echo "deb [ arch=amd64,arm64 ] https://repo.mongodb.org/apt/ubuntu focal/mongodb-org/7.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-7.0.list
-sudo apt update
-sudo apt install -y mongodb-org
+# Остановите Nginx временно
+sudo systemctl stop nginx
 
-# Запуск MongoDB
-sudo systemctl start mongod
-sudo systemctl enable mongod
+# Получите сертификат
+sudo certbot certonly --standalone -d yourdomain.com -d www.yourdomain.com
 
-# Создание пользователя MongoDB (опционально, для безопасности)
-mongosh
-> use admin
-> db.createUser({
-    user: "24task_admin",
-    pwd: "secure_password",
-    roles: ["readWrite", "dbAdmin"]
-  })
-> exit
+# Запустите Nginx
+sudo systemctl start nginx
 ```
 
-### Или использование MongoDB Atlas (облачная БД):
+### Автоматическое обновление
 
-1. Зарегистрируйтесь на https://www.mongodb.com/cloud/atlas
-2. Создайте кластер
-3. Получите connection string
-4. Обновите `MONGODB_URI` в `.env` файле
-
-## Шаг 8: Настройка Email (Gmail SMTP)
-
-1. Войдите в ваш Gmail аккаунт
-2. Перейдите в Настройки → Безопасность
-3. Включите двухфакторную аутентификацию
-4. Создайте "Пароль приложения" для SMTP
-5. Используйте этот пароль в `.env` файле
-
-## Шаг 9: Проверка работы
+Certbot автоматически настроит cron job для обновления сертификатов. Проверьте:
 
 ```bash
-# Проверка статуса PM2
-pm2 status
-
-# Просмотр логов backend
-pm2 logs 24task-server
-
-# Просмотр логов frontend
-pm2 logs 24task-client
-
-# Проверка MongoDB
-sudo systemctl status mongod
-
-# Проверка Nginx
-sudo systemctl status nginx
+sudo certbot renew --dry-run
 ```
 
-## Шаг 10: Обновление приложения
+## Настройка Firewall
+
+### UFW (Ubuntu)
 
 ```bash
-# Остановка процессов
-pm2 stop all
+# Разрешить SSH
+sudo ufw allow 22/tcp
 
-# Обновление кода
-cd /var/www/24task-2
-git pull origin main
+# Разрешить HTTP и HTTPS
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
 
-# Backend
-cd server
-npm install --production
-pm2 restart 24task-server
+# Включить firewall
+sudo ufw enable
 
-# Frontend
-cd ../client
-npm install
-npm run build
-pm2 restart 24task-client
-
-# Проверка
-pm2 status
+# Проверить статус
+sudo ufw status
 ```
 
-## Мониторинг и обслуживание
-
-### Просмотр логов:
+### FirewallD (CentOS)
 
 ```bash
-# PM2 логи
-pm2 logs
+# Разрешить HTTP и HTTPS
+sudo firewall-cmd --permanent --add-service=http
+sudo firewall-cmd --permanent --add-service=https
 
-# Nginx логи
-sudo tail -f /var/log/nginx/24task-access.log
-sudo tail -f /var/log/nginx/24task-error.log
-
-# MongoDB логи
-sudo tail -f /var/log/mongodb/mongod.log
+# Перезагрузить firewall
+sudo firewall-cmd --reload
 ```
 
-### Резервное копирование MongoDB:
+## Резервное копирование
+
+### Скрипт для бэкапа базы данных
+
+Создайте файл `/home/ubuntu/backup.sh`:
 
 ```bash
-# Создание бэкапа
-mongodump --db 24task --out /backup/mongodb/$(date +%Y%m%d)
+#!/bin/bash
 
-# Восстановление из бэкапа
-mongorestore --db 24task /backup/mongodb/20231231/24task
+BACKUP_DIR="/home/ubuntu/backups"
+DATE=$(date +%Y%m%d_%H%M%S)
+CONTAINER_NAME="t24-postgres"
+
+# Создать директорию для бэкапов
+mkdir -p $BACKUP_DIR
+
+# Создать бэкап
+docker exec $CONTAINER_NAME pg_dump -U postgres taskmanager > $BACKUP_DIR/backup_$DATE.sql
+
+# Удалить бэкапы старше 7 дней
+find $BACKUP_DIR -name "backup_*.sql" -mtime +7 -delete
+
+echo "Backup completed: backup_$DATE.sql"
 ```
 
-### Автоматическое резервное копирование (cron):
+Сделайте скрипт исполняемым:
 
 ```bash
-# Редактирование crontab
+chmod +x /home/ubuntu/backup.sh
+```
+
+### Настройка автоматического бэкапа
+
+```bash
+# Открыть crontab
 crontab -e
 
-# Добавление задачи (бэкап каждый день в 2:00)
-0 2 * * * mongodump --db 24task --out /backup/mongodb/$(date +\%Y\%m\%d)
+# Добавить задачу (каждый день в 2:00 AM)
+0 2 * * * /home/ubuntu/backup.sh >> /home/ubuntu/backup.log 2>&1
+```
+
+### Восстановление из бэкапа
+
+```bash
+# Восстановить базу данных
+docker exec -i t24-postgres psql -U postgres taskmanager < /home/ubuntu/backups/backup_20231107_020000.sql
+```
+
+## Мониторинг
+
+### Просмотр логов
+
+```bash
+# Все сервисы
+docker compose logs -f
+
+# Только backend
+docker compose logs -f backend
+
+# Только frontend
+docker compose logs -f frontend
+
+# Только база данных
+docker compose logs -f postgres
+
+# Последние 100 строк
+docker compose logs --tail=100
+```
+
+### Проверка статуса
+
+```bash
+# Статус контейнеров
+docker compose ps
+
+# Использование ресурсов
+docker stats
+
+# Проверка здоровья
+curl https://yourdomain.com/health
+```
+
+## Обновление приложения
+
+```bash
+# Перейти в директорию проекта
+cd /home/ubuntu/24task-2
+
+# Получить последние изменения
+git pull
+
+# Пересобрать и перезапустить
+docker compose down
+docker compose up -d --build
+
+# Проверить логи
+docker compose logs -f
 ```
 
 ## Решение проблем
 
-### Backend не запускается:
+### Контейнеры не запускаются
 
 ```bash
-# Проверка логов
-pm2 logs 24task-server
+# Проверить логи
+docker compose logs
 
-# Проверка переменных окружения
-cat server/.env
+# Проверить конфигурацию
+docker compose config
 
-# Проверка подключения к MongoDB
-mongosh --eval "db.adminCommand('ping')"
+# Пересоздать контейнеры
+docker compose down -v
+docker compose up -d --build
 ```
 
-### Frontend не загружается:
+### База данных не подключается
 
 ```bash
-# Проверка сборки
-cd client
-npm run build
+# Проверить статус PostgreSQL
+docker compose exec postgres pg_isready -U postgres
 
-# Проверка Nginx
-sudo nginx -t
-sudo systemctl status nginx
+# Проверить логи PostgreSQL
+docker compose logs postgres
+
+# Подключиться к базе данных
+docker compose exec postgres psql -U postgres -d taskmanager
 ```
 
-### Проблемы с Socket.IO:
+### Backend возвращает ошибки
 
-Убедитесь, что в Nginx конфигурации правильно настроен proxy для `/socket.io`.
+```bash
+# Проверить логи backend
+docker compose logs backend
 
-## Безопасность
+# Проверить переменные окружения
+docker compose exec backend env | grep DB_
 
-1. **Firewall**: Настройте UFW для блокировки ненужных портов
-   ```bash
-   sudo ufw allow 22    # SSH
-   sudo ufw allow 80    # HTTP
-   sudo ufw allow 443   # HTTPS
-   sudo ufw enable
-   ```
+# Перезапустить backend
+docker compose restart backend
+```
 
-2. **MongoDB**: Используйте аутентификацию и ограничьте доступ
-3. **JWT Secret**: Используйте длинный случайный ключ
-4. **SSL**: Всегда используйте HTTPS в production
-5. **Обновления**: Регулярно обновляйте зависимости
-   ```bash
-   npm audit
-   npm audit fix
-   ```
+### Frontend не загружается
+
+```bash
+# Проверить логи frontend
+docker compose logs frontend
+
+# Проверить Nginx внутри контейнера
+docker compose exec frontend nginx -t
+
+# Перезапустить frontend
+docker compose restart frontend
+```
 
 ## Производительность
 
-### Оптимизация Nginx:
+### Оптимизация PostgreSQL
 
-```nginx
-# Добавьте в nginx.conf
-gzip on;
-gzip_vary on;
-gzip_min_length 1024;
-gzip_types text/plain text/css text/xml text/javascript application/x-javascript application/xml+rss application/json application/javascript;
+Отредактируйте `docker-compose.yml`:
 
-client_max_body_size 100M;
+```yaml
+postgres:
+  command:
+    - "postgres"
+    - "-c"
+    - "max_connections=200"
+    - "-c"
+    - "shared_buffers=256MB"
+    - "-c"
+    - "effective_cache_size=1GB"
+    - "-c"
+    - "work_mem=4MB"
 ```
 
-### PM2 Cluster Mode (для высоких нагрузок):
+### Масштабирование
+
+Для горизонтального масштабирования:
 
 ```bash
-pm2 start src/server.js --name 24task-server -i max
+# Запустить несколько инстансов backend
+docker compose up -d --scale backend=3
+```
+
+Настройте Nginx как load balancer:
+
+```nginx
+upstream backend {
+    server localhost:3000;
+    server localhost:3001;
+    server localhost:3002;
+}
+
+location /api {
+    proxy_pass http://backend;
+}
+```
+
+## Безопасность
+
+### Рекомендации
+
+1. **Измените все пароли по умолчанию**
+2. **Используйте сильный JWT_SECRET** (минимум 32 символа)
+3. **Включите HTTPS** (Let's Encrypt)
+4. **Настройте firewall** (UFW/FirewallD)
+5. **Регулярно обновляйте систему** (`apt update && apt upgrade`)
+6. **Настройте автоматические бэкапы**
+7. **Ограничьте SSH доступ** (только по ключам)
+8. **Используйте fail2ban** для защиты от брутфорса
+9. **Мониторьте логи** на подозрительную активность
+10. **Регулярно обновляйте Docker образы**
+
+### Установка fail2ban
+
+```bash
+sudo apt install -y fail2ban
+
+# Создать конфигурацию
+sudo nano /etc/fail2ban/jail.local
+```
+
+```ini
+[DEFAULT]
+bantime = 3600
+findtime = 600
+maxretry = 5
+
+[sshd]
+enabled = true
+```
+
+```bash
+# Запустить fail2ban
+sudo systemctl enable fail2ban
+sudo systemctl start fail2ban
 ```
 
 ## Поддержка
 
-При возникновении проблем:
-1. Проверьте логи всех сервисов
-2. Убедитесь, что все переменные окружения настроены правильно
-3. Проверьте доступность MongoDB
-4. Создайте Issue в GitHub репозитории
+Если у вас возникли проблемы:
+
+1. Проверьте логи: `docker compose logs`
+2. Проверьте документацию: `README.md`, `ARCHITECTURE.md`
+3. Создайте issue на GitHub: https://github.com/alex-web13-2001/24task-2/issues
+
+## Контрольный список деплоя
+
+- [ ] Docker и Docker Compose установлены
+- [ ] Репозиторий клонирован
+- [ ] Переменные окружения настроены (.env файлы)
+- [ ] JWT_SECRET изменен на случайную строку
+- [ ] Пароли базы данных изменены
+- [ ] CORS_ORIGIN настроен на ваш домен
+- [ ] Docker Compose запущен (`docker compose up -d`)
+- [ ] Nginx установлен и настроен
+- [ ] SSL сертификат получен (Let's Encrypt)
+- [ ] Firewall настроен
+- [ ] Автоматические бэкапы настроены
+- [ ] Мониторинг настроен
+- [ ] Приложение доступно по HTTPS
+- [ ] Все функции протестированы
+
+Поздравляем! Ваше приложение T24 Task Manager успешно развернуто! 🎉

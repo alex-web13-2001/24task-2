@@ -1,37 +1,61 @@
 import React from 'react';
-import { LayoutGrid, Table as TableIcon, Plus } from 'lucide-react';
+import { LayoutGrid, Table as TableIcon, X } from 'lucide-react';
 import { Button } from './ui/button';
-import { Input } from './ui/input';
-import { Label } from './ui/label';
 import { Badge } from './ui/badge';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { TaskModal } from './task-modal';
 import { PersonalKanbanBoard } from './personal-kanban-board';
 import { PersonalTaskTable } from './personal-task-table';
+import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
+import { Checkbox } from './ui/checkbox';
+import { RadioGroup, RadioGroupItem } from './ui/radio-group';
+import { Label } from './ui/label';
+import { motion, AnimatePresence } from 'motion/react';
 
 export function TasksView() {
   const [viewMode, setViewMode] = React.useState<'kanban' | 'table'>('kanban');
   const [selectedTaskId, setSelectedTaskId] = React.useState<string | null>(null);
   
-  // Фильтры согласно ТЗ: статус, приоритет, дедлайн
-  const [statusFilter, setStatusFilter] = React.useState<string>('all');
-  const [priorityFilter, setPriorityFilter] = React.useState<string>('all');
-  const [deadlineFilter, setDeadlineFilter] = React.useState<string>('all');
+  // Фильтры: приоритет и дедлайн (без статуса)
+  const [filters, setFilters] = React.useState<{
+    priorities: string[];
+    deadline: string;
+  }>({
+    priorities: [],
+    deadline: 'all',
+  });
 
   const handleTaskClick = (taskId: string) => {
     setSelectedTaskId(taskId);
   };
 
-  const filters = {
-    status: statusFilter,
-    priority: priorityFilter,
-    deadline: deadlineFilter,
+  const toggleArrayFilter = (key: 'priorities', value: string) => {
+    setFilters((prev) => ({
+      ...prev,
+      [key]: prev[key].includes(value)
+        ? prev[key].filter((v) => v !== value)
+        : [...prev[key], value],
+    }));
   };
+
+  const handleClearFilters = () => {
+    setFilters({
+      priorities: [],
+      deadline: 'all',
+    });
+  };
+
+  const prioritiesList = [
+    { id: 'high', name: 'Высокий' },
+    { id: 'medium', name: 'Средний' },
+    { id: 'low', name: 'Низкий' },
+  ];
+
+  const hasActiveFilters = filters.priorities.length > 0 || filters.deadline !== 'all';
 
   return (
     <div className="flex-1 flex flex-col h-full overflow-hidden">
       {/* Заголовок и фильтры */}
-      <div className="border-b bg-white px-4 md:px-6 py-4">
+      <div className="border-b bg-white px-4 md:px-6 py-4 flex-shrink-0">
         <div className="flex items-center justify-between mb-4">
           <div>
             <h1 className="text-gray-900 mb-1">Личные задачи</h1>
@@ -62,71 +86,140 @@ export function TasksView() {
         </div>
 
         {/* Фильтры */}
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-2">
-            <Label className="text-sm text-gray-600">Статус:</Label>
-            <Select value={statusFilter} onValueChange={setStatusFilter}>
-              <SelectTrigger className="w-36">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Все</SelectItem>
-                <SelectItem value="assigned">Assigned</SelectItem>
-                <SelectItem value="in-progress">In Progress</SelectItem>
-                <SelectItem value="done">Done</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
+        <motion.div 
+          className="flex items-center gap-2 flex-wrap"
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3 }}
+        >
+          <Label className="text-sm text-gray-600">Фильтры:</Label>
 
-          <div className="flex items-center gap-2">
-            <Label className="text-sm text-gray-600">Приоритет:</Label>
-            <Select value={priorityFilter} onValueChange={setPriorityFilter}>
-              <SelectTrigger className="w-36">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Все</SelectItem>
-                <SelectItem value="high">Высокий</SelectItem>
-                <SelectItem value="medium">Средний</SelectItem>
-                <SelectItem value="low">Низкий</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
+          {/* Приоритет */}
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="outline" size="sm" className="h-8">
+                Приоритет
+                <AnimatePresence>
+                  {filters.priorities.length > 0 && (
+                    <motion.div
+                      initial={{ scale: 0, opacity: 0 }}
+                      animate={{ scale: 1, opacity: 1 }}
+                      exit={{ scale: 0, opacity: 0 }}
+                      transition={{ duration: 0.2 }}
+                    >
+                      <Badge variant="secondary" className="ml-2 px-1 min-w-[20px] h-5">
+                        {filters.priorities.length}
+                      </Badge>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-48" align="start">
+              <div className="space-y-2">
+                <div className="flex items-center justify-between mb-2">
+                  <Label className="text-sm">Приоритет</Label>
+                  {filters.priorities.length > 0 && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setFilters({ ...filters, priorities: [] })}
+                      className="h-auto p-0 text-xs text-purple-600"
+                    >
+                      Очистить
+                    </Button>
+                  )}
+                </div>
+                {prioritiesList.map((priority) => (
+                  <div key={priority.id} className="flex items-center space-x-2">
+                    <Checkbox
+                      id={`priority-${priority.id}`}
+                      checked={filters.priorities.includes(priority.id)}
+                      onCheckedChange={() => toggleArrayFilter('priorities', priority.id)}
+                    />
+                    <label
+                      htmlFor={`priority-${priority.id}`}
+                      className="text-sm cursor-pointer flex-1"
+                    >
+                      {priority.name}
+                    </label>
+                  </div>
+                ))}
+              </div>
+            </PopoverContent>
+          </Popover>
 
-          <div className="flex items-center gap-2">
-            <Label className="text-sm text-gray-600">Дедлайн:</Label>
-            <Select value={deadlineFilter} onValueChange={setDeadlineFilter}>
-              <SelectTrigger className="w-36">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Все</SelectItem>
-                <SelectItem value="overdue">Просрочено</SelectItem>
-                <SelectItem value="today">Сегодня</SelectItem>
-                <SelectItem value="week">На этой неделе</SelectItem>
-                <SelectItem value="month">В этом месяце</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
+          {/* Дедлайн */}
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="outline" size="sm" className="h-8">
+                Дедлайн
+                <AnimatePresence>
+                  {filters.deadline !== 'all' && (
+                    <motion.div
+                      initial={{ scale: 0, opacity: 0 }}
+                      animate={{ scale: 1, opacity: 1 }}
+                      exit={{ scale: 0, opacity: 0 }}
+                      transition={{ duration: 0.2 }}
+                    >
+                      <Badge variant="secondary" className="ml-2 px-1 min-w-[20px] h-5">
+                        1
+                      </Badge>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-56" align="start">
+              <div className="space-y-3">
+                <Label className="text-sm">Фильтр по дедлайну</Label>
+                <RadioGroup
+                  value={filters.deadline}
+                  onValueChange={(value: any) =>
+                    setFilters({ ...filters, deadline: value })
+                  }
+                >
+                  {[
+                    { value: 'all', label: 'Все задачи' },
+                    { value: 'overdue', label: 'Просрочено' },
+                    { value: 'today', label: 'Сегодня' },
+                    { value: '3days', label: '3 дня' },
+                    { value: 'week', label: 'На этой неделе' },
+                  ].map((option) => (
+                    <div key={option.value} className="flex items-center space-x-2">
+                      <RadioGroupItem
+                        value={option.value}
+                        id={`deadline-${option.value}`}
+                      />
+                      <Label
+                        htmlFor={`deadline-${option.value}`}
+                        className="text-sm cursor-pointer flex-1"
+                      >
+                        {option.label}
+                      </Label>
+                    </div>
+                  ))}
+                </RadioGroup>
+              </div>
+            </PopoverContent>
+          </Popover>
 
-          {(statusFilter !== 'all' || priorityFilter !== 'all' || deadlineFilter !== 'all') && (
+          {hasActiveFilters && (
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => {
-                setStatusFilter('all');
-                setPriorityFilter('all');
-                setDeadlineFilter('all');
-              }}
+              onClick={handleClearFilters}
+              className="h-8 text-purple-600"
             >
-              Сбросить
+              <X className="w-4 h-4 mr-1" />
+              Сбросить все
             </Button>
           )}
-        </div>
+        </motion.div>
       </div>
 
       {/* Основная область */}
-      <div className="flex-1 overflow-hidden">
+      <div className="flex-1 flex flex-col overflow-hidden">
         {viewMode === 'kanban' ? (
           <PersonalKanbanBoard filters={filters} onTaskClick={handleTaskClick} />
         ) : (

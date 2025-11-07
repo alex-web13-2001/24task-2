@@ -5,8 +5,10 @@ import { Label } from './ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import { Alert, AlertDescription } from './ui/alert';
-import { ArrowLeft, CheckCircle2 } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Loader2 } from 'lucide-react';
 import { toast } from 'sonner@2.0.3';
+import { authAPI } from '../utils/supabase/client';
+import { AnimatedLogo } from './logo';
 
 export function AuthScreen({ onLogin }: { onLogin: () => void }) {
   const [loginEmail, setLoginEmail] = React.useState('');
@@ -17,35 +19,82 @@ export function AuthScreen({ onLogin }: { onLogin: () => void }) {
   const [resetEmail, setResetEmail] = React.useState('');
   const [showResetPassword, setShowResetPassword] = React.useState(false);
   const [resetEmailSent, setResetEmailSent] = React.useState(false);
+  const [isLoading, setIsLoading] = React.useState(false);
+  const [activeTab, setActiveTab] = React.useState('login');
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    onLogin();
+    
+    if (!loginEmail.trim() || !loginPassword.trim()) {
+      toast.error('Заполните все поля');
+      return;
+    }
+    
+    setIsLoading(true);
+    
+    try {
+      await authAPI.signIn(loginEmail, loginPassword);
+      toast.success('Вход выполнен успешно! 🎉');
+      onLogin();
+    } catch (error: any) {
+      console.error('Login error:', error);
+      toast.error(error.message || 'Ошибка входа');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const handleRegister = (e: React.FormEvent) => {
+  const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
-    onLogin();
+    
+    if (!registerName.trim() || !registerEmail.trim() || !registerPassword.trim()) {
+      toast.error('Заполните все поля');
+      return;
+    }
+    
+    if (registerPassword.length < 6) {
+      toast.error('Пароль должен содержать минимум 6 символов');
+      return;
+    }
+    
+    setIsLoading(true);
+    
+    try {
+      await authAPI.signUp(registerEmail, registerPassword, registerName);
+      toast.success('🎉 Регистрация успешна! Загружаем ваше рабочее пространство...');
+      // Small delay to show the success message
+      setTimeout(() => {
+        onLogin();
+      }, 500);
+    } catch (error: any) {
+      console.error('Register error:', error);
+      toast.error(error.message || 'Ошибка регистрации');
+      setIsLoading(false);
+    }
   };
 
-  const handleResetPassword = (e: React.FormEvent) => {
+  const handleResetPassword = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (resetEmail.trim()) {
-      // Имитация отправки письма для восстановления пароля
+    setIsLoading(true);
+    
+    try {
+      await authAPI.resetPassword(resetEmail);
       setResetEmailSent(true);
       toast.success('Письмо с инструкциями отправлено на ' + resetEmail);
+    } catch (error: any) {
+      console.error('Reset password error:', error);
+      toast.error(error.message || 'Ошибка отправки письма');
+    } finally {
+      setIsLoading(false);
     }
   };
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-purple-50 via-white to-pink-50 p-4">
       <div className="w-full max-w-md">
-        <div className="text-center mb-8">
-          <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-purple-600 to-pink-500 rounded-2xl mb-4">
-            <span className="text-3xl text-white">24</span>
-          </div>
-          <h1 className="text-purple-600 mb-2">24Task</h1>
-          <p className="text-gray-600">Управление задачами и проектами</p>
+        <div className="mb-8">
+          <AnimatedLogo />
+          <p className="text-gray-600 mt-4 text-center">Управление задачами и проектами</p>
         </div>
 
         <Card>
@@ -74,7 +123,7 @@ export function AuthScreen({ onLogin }: { onLogin: () => void }) {
           </CardHeader>
           <CardContent>
             {!showResetPassword ? (
-              <Tabs defaultValue="login" className="w-full">
+              <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
                 <TabsList className="grid w-full grid-cols-2">
                   <TabsTrigger value="login">Вход</TabsTrigger>
                   <TabsTrigger value="register">Регистрация</TabsTrigger>
@@ -113,9 +162,26 @@ export function AuthScreen({ onLogin }: { onLogin: () => void }) {
                         required
                       />
                     </div>
-                    <Button type="submit" className="w-full bg-purple-600 hover:bg-purple-700">
-                      Войти
+                    <Button type="submit" className="w-full bg-purple-600 hover:bg-purple-700" disabled={isLoading}>
+                      {isLoading ? (
+                        <>
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          Вход...
+                        </>
+                      ) : (
+                        'Войти'
+                      )}
                     </Button>
+                    <p className="text-center text-sm text-gray-600 mt-4">
+                      Нет аккаунта?{' '}
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('register')}
+                        className="text-purple-600 hover:text-purple-700 hover:underline"
+                      >
+                        Зарегистрируйтесь
+                      </button>
+                    </p>
                   </form>
                 </TabsContent>
 
@@ -152,11 +218,30 @@ export function AuthScreen({ onLogin }: { onLogin: () => void }) {
                         value={registerPassword}
                         onChange={(e) => setRegisterPassword(e.target.value)}
                         required
+                        minLength={6}
                       />
+                      <p className="text-xs text-gray-500">Минимум 6 символов</p>
                     </div>
-                    <Button type="submit" className="w-full bg-purple-600 hover:bg-purple-700">
-                      Зарегистрироваться
+                    <Button type="submit" className="w-full bg-purple-600 hover:bg-purple-700" disabled={isLoading}>
+                      {isLoading ? (
+                        <>
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          Регистрация...
+                        </>
+                      ) : (
+                        'Зарегистрироваться'
+                      )}
                     </Button>
+                    <p className="text-center text-sm text-gray-600 mt-4">
+                      Уже есть аккаунт?{' '}
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('login')}
+                        className="text-purple-600 hover:text-purple-700 hover:underline"
+                      >
+                        Войти
+                      </button>
+                    </p>
                   </form>
                 </TabsContent>
               </Tabs>
@@ -178,8 +263,15 @@ export function AuthScreen({ onLogin }: { onLogin: () => void }) {
                         Мы отправим инструкции по восстановлению пароля на указанный email
                       </p>
                     </div>
-                    <Button type="submit" className="w-full bg-purple-600 hover:bg-purple-700">
-                      Отправить инструкции
+                    <Button type="submit" className="w-full bg-purple-600 hover:bg-purple-700" disabled={isLoading}>
+                      {isLoading ? (
+                        <>
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          Отправка...
+                        </>
+                      ) : (
+                        'Отправить инструкции'
+                      )}
                     </Button>
                   </form>
                 ) : (
