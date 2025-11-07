@@ -54,8 +54,10 @@
       target: 'esnext',
       outDir: 'build',
     },
-    server: {
-      port: 3000,
-      open: true,
-    },
+  server: {
+    host: '0.0.0.0',
+    port: 5173,
+    open: false,
+    allowedHosts: ['5173-iqksp2aggco0qnjo5uk7z-1d94b4b5.manus.computer'],
+  },
   });

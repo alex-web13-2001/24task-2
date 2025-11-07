@@ -14,7 +14,7 @@ import { ProfileView } from './components/profile-view';
 import { TaskModal } from './components/task-modal';
 import { SidebarProvider, SidebarInset } from './components/ui/sidebar';
 import { Toaster } from './components/ui/sonner';
-import { authAPI } from './utils/supabase/client';
+import { authAPI } from './utils/api/client';
 import { AppProvider } from './contexts/app-context';
 import { ErrorBoundary } from './components/error-boundary';
 import { Loader2 } from 'lucide-react';

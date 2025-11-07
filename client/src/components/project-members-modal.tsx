@@ -41,8 +41,9 @@ import {
   UserPlus,
 } from 'lucide-react';
 import { toast } from 'sonner@2.0.3';
-import { projectId, publicAnonKey } from '../utils/supabase/info';
-import { getAuthToken } from '../utils/supabase/client';
+import { getAuthToken } from '../utils/api/client';
+
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000/api';
 import { format } from 'date-fns';
 import { ru } from 'date-fns/locale';
 
@@ -208,7 +209,7 @@ export function ProjectMembersModal({
       }
       
       const response = await fetch(
-        `https://${projectId}.supabase.co/functions/v1/make-server-d9879966/projects/${prjId}/members`,
+        `${API_BASE_URL}/projects/${prjId}/members`,
         {
           headers: {
             Authorization: `Bearer ${accessToken}`,
@@ -253,7 +254,7 @@ export function ProjectMembersModal({
       }
       
       const response = await fetch(
-        `https://${projectId}.supabase.co/functions/v1/make-server-d9879966/projects/${prjId}/invitations`,
+        `${API_BASE_URL}/projects/${prjId}/invitations`,
         {
           headers: {
             Authorization: `Bearer ${accessToken}`,
@@ -322,7 +323,7 @@ export function ProjectMembersModal({
       console.log('Sending invitation for:', inviteEmail, 'role:', inviteRole);
       
       const response = await fetch(
-        `https://${projectId}.supabase.co/functions/v1/make-server-d9879966/projects/${prjId}/invitations`,
+        `${API_BASE_URL}/projects/${prjId}/invitations`,
         {
           method: 'POST',
           headers: {
@@ -380,7 +381,7 @@ export function ProjectMembersModal({
       }
       
       const response = await fetch(
-        `https://${projectId}.supabase.co/functions/v1/make-server-d9879966/projects/${prjId}/invitations/${invitation.id}/resend`,
+        `${API_BASE_URL}/projects/${prjId}/invitations/${invitation.id}/resend`,
         {
           method: 'PUT',
           headers: {
@@ -417,7 +418,7 @@ export function ProjectMembersModal({
       }
       
       const response = await fetch(
-        `https://${projectId}.supabase.co/functions/v1/make-server-d9879966/projects/${prjId}/invitations/${inviteToRevoke.id}/revoke`,
+        `${API_BASE_URL}/projects/${prjId}/invitations/${inviteToRevoke.id}/revoke`,
         {
           method: 'PUT',
           headers: {
@@ -464,7 +465,7 @@ export function ProjectMembersModal({
       }
       
       const response = await fetch(
-        `https://${projectId}.supabase.co/functions/v1/make-server-d9879966/projects/${prjId}/members/${memberId}`,
+        `${API_BASE_URL}/projects/${prjId}/members/${memberId}`,
         {
           method: 'PUT',
           headers: {
@@ -515,7 +516,7 @@ export function ProjectMembersModal({
       }
       
       const response = await fetch(
-        `https://${projectId}.supabase.co/functions/v1/make-server-d9879966/projects/${prjId}/members/${memberToDelete.id}`,
+        `${API_BASE_URL}/projects/${prjId}/members/${memberToDelete.id}`,
         {
           method: 'DELETE',
           headers: {

@@ -1,5 +1,5 @@
 import React from 'react';
-import { tasksAPI, projectsAPI, authAPI, teamAPI, userSettingsAPI, supabase, getAuthToken } from '../utils/supabase/client';
+import { tasksAPI, projectsAPI, authAPI } from '../utils/api/client';
 import { toast } from 'sonner@2.0.3';
 
 export interface TaskAttachment {

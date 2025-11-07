@@ -7,7 +7,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import { Alert, AlertDescription } from './ui/alert';
 import { ArrowLeft, CheckCircle2, Loader2 } from 'lucide-react';
 import { toast } from 'sonner@2.0.3';
-import { authAPI } from '../utils/supabase/client';
+import { authAPI } from '../utils/api/client';
 import { AnimatedLogo } from './logo';
 
 export function AuthScreen({ onLogin }: { onLogin: () => void }) {
